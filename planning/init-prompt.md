@@ -117,6 +117,9 @@ Gap Identification: Ask the agent to "audit the plumbing." Do we have an output 
   6e. commit code changes for the batch
 6. when no incomplete WUs remain, print a summary for the user and exit the workflow. Offer to push commits then merge the pr.
 
+## requests for user feedback
+any subagent can respond with a request for user feedback. The orchestrator should honor that request, as it may be a critical issue that requires the user's intervention or feedback.
+
 ## when an implementer fails
 In a batch, one or more implementers may fail, because they report an issue with the plan, because they go radio silent and exit without satisfying their contract, or because their changes are rejected by the reviewer.
 
@@ -181,6 +184,7 @@ Here are some overall guidelines. I do think that each contract should be well d
 - [reviewer] rejection feedback
 - [reviewer] feedback target (implementer, planner)
 - break-glass justification
+- user feedback request
 
 # the state machine
 The orchestrator is essentially a state machine. the orchestrator should understand both the states and the transitions (e.g., context-gathering -> plan sketch, batch extraction -> implementation, etc.)
@@ -221,3 +225,33 @@ The LLM should be able to read its prompt and step into the role, instead of bei
 
 ## Running unsupervised
 The subagents will run as unsupervised subagents with open permissions. They should each understand their individual bailiwick and their role in the larger workflow so that they don't try to find a way around their tool limitations.
+
+# breaking out skills
+There are elements of this workflow that would benefit from extracting their prompts to a skill, since they're only useful occasionally.
+
+I'm thinking, for example:
+- break glass procedure
+- implementer recall
+- planner mode 2
+- context gathering loop
+- other exception processes
+- requesting user feedback
+
+# breaking out context gathering
+I mentioned a step in the workflow that would potentially ask the user to clear context or call compact manually. 
+
+I wonder if we would benefit from a context gathering agent that would specialize in this process and could be called using opus every time, freeing up the orchestrator for haiku every time.
+
+I like this idea more and more now that I'm thinking about it, to simplify the process for the orchestrator and eliminate that manual switch
+
+# model choice
+Unless you object to any of these, these are my initial thoughts on model selection for each agent
+
+The orchestrator is a simple state machine and should run in haiku. This would be user guidance, as we cannot enforce the agent running when the user calls the command.
+
+the planner should run in opus, as it does the heaviest thinking and planning
+
+the implementer should run in sonnet, as that is the most efficient code writing model
+
+the reviewer should run in sonnet. I'm not as sure about this one. If the requirements are written well enough by the planner, reviewing a change should be a fairly mechanical process. I'd be ok with haiku for this. we can review later if necessary.
+
