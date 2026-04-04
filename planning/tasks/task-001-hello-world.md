@@ -71,10 +71,10 @@ SDK smoke test passed.
 
 ## Acceptance criteria
 
-- [ ] `uv sync` installs without errors
-- [ ] `python scripts/hello_sdk.py` exits with code 0
-- [ ] Output contains the `SDK smoke test passed.` line
-- [ ] No import errors or missing-dependency errors
+- [x] `uv sync` installs without errors
+- [x] `python scripts/hello_sdk.py` exits with code 0
+- [x] Output contains the `SDK smoke test passed.` line
+- [x] No import errors or missing-dependency errors
 
 ---
 
