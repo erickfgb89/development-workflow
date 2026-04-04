@@ -1,0 +1,16 @@
+[project]
+name = "development-workflow"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "claude-agent-sdk>=0.0.14",
+]
+
+[project.scripts]
+dev-workflow = "orchestrate:main"
+
+[tool.zipapp]
+output = "dev-workflow.pyz"
+main = "orchestrate:main"
