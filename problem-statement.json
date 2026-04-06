@@ -1,0 +1,225 @@
+{
+  "problem_statement": "The orchestrator's terminal interface (`orchestrate/console.py` and related I/O paths) provides a minimal single-line prompt with no visual structure, no streaming feedback, and no progress indication. Users watching a multi-agent workflow cannot distinguish agent output from system output, have no feedback while agents are thinking, and cannot compose input while waiting. The web UI (`orchestrate/ui/`) has been abandoned and should be removed. The terminal must become the sole interactive surface, rebuilt using Textual to provide: a multi-line input box with outlined borders, streaming agent output in a tabbed panel (one tab per active agent), a persistent status indicator, and a send/wait button that gates message submission until the agent is ready for input. All existing bare `input()` calls in the orchestrator must be migrated to route through the TUI.",
+  "reasoning_strategies_used": [
+    "First Principles",
+    "Inversion",
+    "Boundary and Edge Case Analysis",
+    "IPO Modeling"
+  ],
+  "acceptance_criteria": [
+    {
+      "id": "AC-001",
+      "description": "The terminal UI renders an outlined (bordered) multi-line text input area where pressing Enter inserts a newline and Alt+Enter (or Escape then Enter) submits the message.",
+      "source": "user",
+      "rationale": "User explicitly requested outlined multi-line input with Enter=newline and Alt+Enter or Esc\u2192Enter to send."
+    },
+    {
+      "id": "AC-002",
+      "description": "Agent responses from the `query()` async iterator are displayed in a separate bordered output panel, with each message appended as it arrives (message-level streaming).",
+      "source": "user",
+      "rationale": "User requested streaming display of the query() iterator output in a separate outlined box."
+    },
+    {
+      "id": "AC-003",
+      "description": "When multiple agents run in parallel (batch implementing), each agent's output is displayed in a separate tab within the output panel, switchable by the user.",
+      "source": "user",
+      "rationale": "User confirmed tabbed interface for parallel agent output after considering alternatives."
+    },
+    {
+      "id": "AC-004",
+      "description": "A visual progress indicator (modern spinner or animation, not ASCII `|/-\\`) is displayed near the send button whenever the orchestrator is waiting for an agent response.",
+      "source": "user",
+      "rationale": "User requested a modern 'something's happening' indicator, explicitly referencing that old-style ASCII spinners are insufficient."
+    },
+    {
+      "id": "AC-005",
+      "description": "A persistent status widget displays the current orchestrator state (e.g., 'IMPLEMENTING \u2014 WU-002, WU-003 \u2014 4/12 complete') and updates as state transitions occur.",
+      "source": "user",
+      "rationale": "User requested a small status box showing current state in addition to checkpoint output in the stream."
+    },
+    {
+      "id": "AC-006",
+      "description": "The input area remains typeable at all times (users can compose messages while agents work), but a send/wait button gates submission \u2014 showing 'Send' when the orchestrator is ready for input and a spinner when it is not.",
+      "source": "user",
+      "rationale": "User explicitly described a send/wait toggle button model, referencing the VS Code Claude plugin pattern."
+    },
+    {
+      "id": "AC-007",
+      "description": "The existing `emit_checkpoint()` ASCII box output is rendered into the streaming output panel as formatted text.",
+      "source": "inferred",
+      "rationale": "Checkpoints are the primary state-transition signal. They should appear in the output stream alongside agent messages rather than being lost or conflicting with TUI rendering."
+    },
+    {
+      "id": "AC-008",
+      "description": "The `@`-mention file completer (`AtMentionCompleter`) continues to function within the new multi-line input widget.",
+      "source": "inferred",
+      "rationale": "The existing completer is a key feature documented in the implementation plan. Losing it in the TUI rewrite would be a regression."
+    },
+    {
+      "id": "AC-009",
+      "description": "All bare `input()` calls in `orchestrator.py` (merge conflict resolution, triage escalation) are routed through the TUI input system instead of reading from raw stdin.",
+      "source": "inferred",
+      "rationale": "Bare `input()` calls (lines ~323, ~388, ~509 in orchestrator.py) would crash or produce garbled output inside a full-screen TUI. They must be migrated to preserve functionality."
+    },
+    {
+      "id": "AC-010",
+      "description": "The abandoned web UI code (`orchestrate/ui/events.py`, `orchestrate/ui/server.py`, `orchestrate/ui/static/`, and EventBus references in `state.py` and `orchestrator.py`) is removed.",
+      "source": "user",
+      "rationale": "User confirmed the web UI is abandoned and offered to include removal as a work unit."
+    }
+  ],
+  "functional_requirements": [
+    {
+      "id": "FR-001",
+      "description": "Replace the current `PromptSession`-based console with a Textual `App` that manages the full terminal screen. The app layout includes: (a) a top status bar, (b) a tabbed streaming output area, (c) a bordered multi-line input area with a send/wait button.",
+      "linked_acs": [
+        "AC-001",
+        "AC-002",
+        "AC-003",
+        "AC-005",
+        "AC-006"
+      ]
+    },
+    {
+      "id": "FR-002",
+      "description": "Implement the multi-line input widget using Textual's `TextArea` with custom key bindings: Enter inserts a newline; Alt+Enter and Escape\u2192Enter submit the message. On submission, emit a message event consumed by the orchestrator's async loop.",
+      "linked_acs": [
+        "AC-001"
+      ]
+    },
+    {
+      "id": "FR-003",
+      "description": "Implement the streaming output panel using Textual's `RichLog` (or equivalent append-only scrolling widget). Messages from the `query()` async iterator are appended as they arrive. Each message is prefixed with its type or agent identity for clarity.",
+      "linked_acs": [
+        "AC-002"
+      ]
+    },
+    {
+      "id": "FR-004",
+      "description": "Implement tabbed output using Textual's `TabbedContent`. When batch implementing starts, create one tab per agent (e.g., 'implementer-WU-002'). Route streamed messages to the correct tab. Clean up tabs when agents complete.",
+      "linked_acs": [
+        "AC-003"
+      ]
+    },
+    {
+      "id": "FR-005",
+      "description": "Implement the send/wait button as a Textual `Button` widget below the input area. When the orchestrator is awaiting agent response, replace the button label with a `LoadingIndicator` (or animated spinner widget) and disable the submit action. When the orchestrator is ready for user input, restore the 'Send' label and enable submission.",
+      "linked_acs": [
+        "AC-004",
+        "AC-006"
+      ]
+    },
+    {
+      "id": "FR-006",
+      "description": "Implement the persistent status widget as a Textual `Static` or `Header`/`Footer` widget. Subscribe to state changes (replacing the EventBus pattern) and update to reflect: current phase, active work units, and completion count (e.g., '4/12 WUs complete').",
+      "linked_acs": [
+        "AC-005"
+      ]
+    },
+    {
+      "id": "FR-007",
+      "description": "Refactor `call_agent()` in `orchestrator.py` to accept a callback or message sink. Instead of silently iterating, each intermediate message from the `query()` iterator is forwarded to the TUI's output panel for real-time display.",
+      "linked_acs": [
+        "AC-002",
+        "AC-007"
+      ]
+    },
+    {
+      "id": "FR-008",
+      "description": "Integrate the `AtMentionCompleter` into the Textual input widget. If Textual's `TextArea` does not natively support prompt_toolkit-style completers, implement an autocomplete dropdown or suggestion overlay triggered by `@` followed by 3+ characters.",
+      "linked_acs": [
+        "AC-008"
+      ]
+    },
+    {
+      "id": "FR-009",
+      "description": "Replace all bare `input()` calls in `orchestrator.py` (merge conflict decision, triage escalation prompts) with calls that route through the TUI input system \u2014 presenting the prompt in the output panel and awaiting the user's response via the input widget.",
+      "linked_acs": [
+        "AC-009"
+      ]
+    },
+    {
+      "id": "FR-010",
+      "description": "Remove the `orchestrate/ui/` package (events.py, server.py, static/), the `EventBus` import and usage in `state.py` (`save_state`), the `global_bus` import and usage in `orchestrator.py` (`call_agent`), and any related dependencies (FastAPI, uvicorn, sse-starlette) from `pyproject.toml` if they have no other consumers.",
+      "linked_acs": [
+        "AC-010"
+      ]
+    },
+    {
+      "id": "FR-011",
+      "description": "Add `textual` as a dependency in `pyproject.toml`. Evaluate whether `prompt-toolkit` can be removed (Textual does not depend on it) or must be retained for other consumers.",
+      "linked_acs": [
+        "AC-001"
+      ]
+    }
+  ],
+  "nonfunctional_requirements": [
+    {
+      "id": "NFR-001",
+      "description": "Streamed agent messages must appear in the output panel within 100ms of being yielded by the `query()` iterator. The TUI must not batch or buffer messages in a way that introduces perceptible lag.",
+      "category": "performance",
+      "linked_acs": [
+        "AC-002"
+      ]
+    },
+    {
+      "id": "NFR-002",
+      "description": "The TUI must remain responsive (input accepted, tabs switchable, status updated) while multiple agents stream output concurrently during batch implementing.",
+      "category": "performance",
+      "linked_acs": [
+        "AC-003",
+        "AC-006"
+      ]
+    },
+    {
+      "id": "NFR-003",
+      "description": "The output panel must handle long-running sessions without unbounded memory growth. Implement a scrollback limit (e.g., 10,000 lines per tab) with older content discarded.",
+      "category": "scalability",
+      "linked_acs": [
+        "AC-002",
+        "AC-003"
+      ]
+    },
+    {
+      "id": "NFR-004",
+      "description": "The TUI must degrade gracefully in terminals smaller than 80x24 \u2014 layout should remain usable (possibly with reduced output area) rather than crashing or rendering garbage.",
+      "category": "usability",
+      "linked_acs": [
+        "AC-001",
+        "AC-002"
+      ]
+    },
+    {
+      "id": "NFR-005",
+      "description": "The TUI must integrate cleanly with the existing asyncio event loop used by the orchestrator. No thread-based hacks or secondary event loops.",
+      "category": "reliability",
+      "linked_acs": [
+        "AC-001",
+        "AC-002",
+        "AC-006"
+      ]
+    },
+    {
+      "id": "NFR-006",
+      "description": "If the TUI crashes or the user kills it (Ctrl+C), the orchestrator state must remain consistent \u2014 `state.json` should reflect the last saved checkpoint, not a half-written state.",
+      "category": "reliability",
+      "linked_acs": [
+        "AC-005",
+        "AC-009"
+      ]
+    }
+  ],
+  "open_questions": [
+    "Textual's `TextArea` widget does not have built-in autocomplete/completer support like prompt_toolkit. Implementing the @-mention completer (AC-008 / FR-008) may require a custom overlay widget or a Textual community extension. The planner should spike this early to assess effort.",
+    "The `claude_agent_sdk` `query()` iterator yields message objects. The exact types and attributes of intermediate (non-ResultMessage) messages need to be verified against the SDK documentation to determine what content is available for streaming display (e.g., do tool-call messages expose tool name and arguments? do text messages expose partial content?).",
+    "Textual apps run their own async event loop via `app.run_async()`. The orchestrator currently owns the asyncio loop via `asyncio.run(main_async(args))`. The integration pattern (does the Textual app become the top-level loop, with the orchestrator as a worker? or vice versa?) needs architectural decision."
+  ],
+  "assumptions": [
+    "Textual is the chosen TUI framework. prompt_toolkit will be removed as a dependency unless the @-mention completer proves infeasible in Textual, in which case it may be retained as a fallback.",
+    "The `mcp_server.py` tools (`ask_question`, `escalate`) currently use `prompt_toolkit`'s `PromptSession`. These will be refactored to route through the Textual TUI's input system instead.",
+    "The web UI removal (AC-010 / FR-010) is a clean-cut task with no downstream dependencies \u2014 no other code outside `orchestrate/ui/` depends on the web UI being present.",
+    "The Textual app will be the outermost async context, with the orchestrator's `run_orchestrator()` running as an async task within it. This is the natural integration pattern since Textual needs to own the terminal.",
+    "'Modern progress indicator' means Textual's built-in `LoadingIndicator` widget (animated dots) or equivalent \u2014 not a custom animation.",
+    "The stdio MCP server (`orchestrate/stdio_mcp.py`) is unaffected by this work \u2014 it runs in a separate process via `dev-workflow mcp` and does not interact with the terminal TUI."
+  ]
+}

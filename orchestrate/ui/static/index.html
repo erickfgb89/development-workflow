@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+
+<html class="dark" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Mission Control | Kinetic Observatory</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&amp;family=Space+Grotesk:wght@300;400;500;600;700&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        "surface-bright": "#2c2c2f",
+                        "on-secondary-container": "#e1ffec",
+                        "secondary-container": "#006c49",
+                        "inverse-primary": "#005bc4",
+                        "tertiary": "#ffb148",
+                        "outline": "#767577",
+                        "tertiary-dim": "#e79400",
+                        "on-surface-variant": "#adaaad",
+                        "error-container": "#9f0519",
+                        "surface-tint": "#85adff",
+                        "background": "#0e0e10",
+                        "on-surface": "#f9f5f8",
+                        "secondary": "#69f6b8",
+                        "on-primary-fixed-variant": "#002a62",
+                        "primary-fixed-dim": "#5391ff",
+                        "on-secondary-fixed": "#00452d",
+                        "outline-variant": "#48474a",
+                        "surface-container-low": "#131315",
+                        "surface": "#0e0e10",
+                        "on-error-container": "#ffa8a3",
+                        "tertiary-fixed-dim": "#e79400",
+                        "on-error": "#490006",
+                        "primary-dim": "#699cff",
+                        "surface-container-highest": "#262528",
+                        "error": "#ff716c",
+                        "on-primary-fixed": "#000000",
+                        "on-primary": "#002c66",
+                        "inverse-surface": "#fcf8fb",
+                        "on-primary-container": "#002150",
+                        "primary-container": "#6e9fff",
+                        "tertiary-container": "#f8a010",
+                        "surface-variant": "#262528",
+                        "surface-container-lowest": "#000000",
+                        "on-tertiary-fixed-variant": "#563400",
+                        "surface-container-high": "#1f1f22",
+                        "primary-fixed": "#6e9fff",
+                        "secondary-fixed": "#69f6b8",
+                        "on-tertiary": "#573500",
+                        "on-background": "#f9f5f8",
+                        "error-dim": "#d7383b",
+                        "inverse-on-surface": "#565457",
+                        "on-tertiary-fixed": "#2a1700",
+                        "surface-dim": "#0e0e10",
+                        "tertiary-fixed": "#f8a010",
+                        "secondary-dim": "#58e7ab",
+                        "on-secondary": "#005a3c",
+                        "surface-container": "#19191c",
+                        "on-secondary-fixed-variant": "#006544",
+                        "primary": "#85adff",
+                        "secondary-fixed-dim": "#58e7ab",
+                        "on-tertiary-container": "#4a2c00"
+                    },
+                    borderRadius: {
+                        "DEFAULT": "0.125rem",
+                        "lg": "0.25rem",
+                        "xl": "0.5rem",
+                        "full": "0.75rem"
+                    },
+                    fontFamily: {
+                        "headline": ["Space Grotesk"],
+                        "body": ["Inter"],
+                        "label": ["Inter"],
+                        "mono": ["JetBrains Mono"]
+                    }
+                },
+            },
+        }
+    </script>
+<style>
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+            vertical-align: middle;
+        }
+        .dag-node-pending { border-left: 4px solid #48474a; }
+        .dag-node-active { border-left: 4px solid #85adff; box-shadow: 0 0 15px rgba(133, 173, 255, 0.15); }
+        .dag-node-complete { border-left: 4px solid #69f6b8; }
+        .dag-node-failed { border-left: 4px solid #ff716c; }
+        .dag-node-blocked { border-left: 4px solid #ffb148; background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(255, 177, 72, 0.05) 10px, rgba(255, 177, 72, 0.05) 20px); }
+        
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #48474a; border-radius: 10px; }
+        
+        .pulse-edge {
+            stroke-dasharray: 5, 5;
+            animation: dash 1s linear infinite;
+        }
+        @keyframes dash {
+            to { stroke-dashoffset: -10; }
+        }
+    </style>
+</head>
+<body class="bg-surface-dim text-on-surface font-body overflow-hidden h-screen select-none">
+<!-- TopAppBar -->
+<header class="fixed top-0 w-full z-50 flex items-center justify-between px-6 h-14 bg-[#0e0e10] border-b border-[#48474a]/15">
+<div class="flex items-center gap-8">
+<span class="font-black text-blue-400 tracking-widest text-lg font-headline">MISSION_CONTROL</span>
+<nav class="hidden md:flex items-center gap-6 font-headline tracking-tighter uppercase text-xs">
+<a class="text-zinc-500 hover:text-zinc-300 transition-colors" href="#">INIT</a>
+<a class="text-zinc-500 hover:text-zinc-300 transition-colors" href="#">CONTEXT</a>
+<a class="text-zinc-500 hover:text-zinc-300 transition-colors" href="#">PLAN</a>
+<a class="text-blue-400 border-b-2 border-blue-400 pb-1" href="#">BATCH</a>
+<a class="text-zinc-500 hover:text-zinc-300 transition-colors" href="#">IMPLEMENT</a>
+<a class="text-zinc-500 hover:text-zinc-300 transition-colors" href="#">REVIEW</a>
+<a class="text-zinc-500 hover:text-zinc-300 transition-colors" href="#">RECALL</a>
+</nav>
+</div>
+<div class="flex items-center gap-4">
+<div class="flex items-center gap-2 bg-surface-container-low px-3 py-1.5 rounded-lg border border-outline-variant/15">
+<span class="text-[10px] text-zinc-500 font-mono">SOCKET:</span>
+<span class="text-[10px] text-secondary font-mono">ws://localhost:8000/ws</span>
+<span class="material-symbols-outlined text-secondary text-sm" style="font-variation-settings: 'FILL' 1;">sensors</span>
+</div>
+<button class="text-zinc-400 hover:bg-white/5 p-2 rounded transition-all duration-75 active:scale-95">
+<span class="material-symbols-outlined">settings</span>
+</button>
+</div>
+</header>
+<!-- SideNavBar -->
+<aside class="fixed left-0 top-14 bottom-0 w-64 flex flex-col z-40 bg-[#131315] border-r border-[#48474a]/15">
+<div class="p-6">
+<div class="flex items-center gap-3 mb-8">
+<div class="w-10 h-10 rounded bg-gradient-to-br from-primary to-primary-container flex items-center justify-center overflow-hidden">
+<img alt="System Orbit" class="w-full h-full" data-alt="Abstract technological icon representing an orbiting satellite system in deep space with blue neon accents" src="https://lh3.googleusercontent.com/aida-public/AB6AXuAMn8l6KPKI4dBJBHYLoQ61dG6J4jdcEGjm5zbIz_qb-dfsxKTx95eh4vtSyVyBRF_uXgnRyav3tG9_cYQM7syNyPvDiue81b1umDG712cwHtXqiKZfU6k1qgcOLsku35SoEd53SimVLF0r8Ce8qC8cYTcS2-w3mUcS3DrE7SPRIbCyki5Wt3t2qB5xDezJQh_Lmq2E-OIKXVnha0-E2Faf1y_-9FcHWBLL3aQX9JNQf4aRIGSM0rl8kAZ3wID8_RwVbyaFZhbhveM"/>
+</div>
+<div>
+<div class="font-headline font-bold text-blue-400 text-sm leading-none">KINETIC_OBSERVATORY</div>
+<div class="text-[10px] text-zinc-500 font-mono mt-1">V2.0.4-STABLE</div>
+</div>
+</div>
+<nav class="space-y-1">
+<a class="flex items-center gap-3 px-3 py-2 text-blue-400 bg-blue-400/10 border-r-2 border-blue-400 font-inter text-sm font-medium transition-all duration-150 ease-in-out" href="#" id="nav-orchestrator">
+<span class="material-symbols-outlined">precision_manufacturing</span>
+<span>Orchestrator</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-zinc-500 hover:bg-[#1f1f22] font-inter text-sm font-medium transition-all duration-150 ease-in-out" href="#" id="nav-workspace">
+<span class="material-symbols-outlined">folder_open</span>
+<span>Workspace</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-zinc-500 hover:bg-[#1f1f22] font-inter text-sm font-medium transition-all duration-150 ease-in-out" href="#">
+<span class="material-symbols-outlined">account_tree</span>
+<span>Work Units</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-zinc-500 hover:bg-[#1f1f22] font-inter text-sm font-medium transition-all duration-150 ease-in-out" href="#">
+<span class="material-symbols-outlined">terminal</span>
+<span>Terminal</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-zinc-500 hover:bg-[#1f1f22] font-inter text-sm font-medium transition-all duration-150 ease-in-out" href="#">
+<span class="material-symbols-outlined">psychology</span>
+<span>Hats</span>
+</a>
+<a class="flex items-center gap-3 px-3 py-2 text-zinc-500 hover:bg-[#1f1f22] font-inter text-sm font-medium transition-all duration-150 ease-in-out" href="#">
+<span class="material-symbols-outlined">tune</span>
+<span>Settings</span>
+</a>
+</nav>
+</div>
+<div class="mt-auto p-6 border-t border-outline-variant/10">
+<div class="bg-surface-container-lowest p-3 rounded mb-4">
+<div class="text-[10px] text-zinc-500 mb-2 font-mono uppercase tracking-widest">Global Progress</div>
+<div class="flex justify-between text-[10px] mb-1">
+<span class="text-on-surface">WUs COMPLETED</span>
+<span class="text-secondary">42 / 68</span>
+</div>
+<div class="w-full bg-surface-container-high h-1 rounded-full overflow-hidden">
+<div class="bg-secondary h-full" style="width: 61%"></div>
+</div>
+</div>
+<button class="w-full py-2 bg-error-container text-on-surface text-xs font-bold rounded uppercase tracking-widest hover:brightness-110 transition-all active:scale-[0.98]">
+                INTERRUPT_PROCESS
+            </button>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="ml-64 mt-14 h-[calc(100vh-3.5rem)] grid grid-cols-12 gap-0 overflow-hidden">
+<!-- Central DAG View -->
+<section class="col-span-8 relative bg-surface-container-lowest overflow-hidden flex flex-col">
+<div class="absolute top-4 left-4 z-10 flex items-center gap-3">
+<div class="bg-surface-container-high/80 backdrop-blur-md px-3 py-1.5 rounded border border-outline-variant/20 flex items-center gap-2">
+<span class="w-2 h-2 rounded-full bg-secondary animate-pulse"></span>
+<span class="text-[10px] font-mono uppercase">Live DAG View: Graph_v0.12</span>
+</div>
+</div>
+<!-- DAG Simulation Area -->
+<div class="flex-1 relative p-12 overflow-auto custom-scrollbar">
+<!-- SVG Edges -->
+<svg class="absolute inset-0 w-full h-full pointer-events-none" style="min-width: 1200px; min-height: 800px;">
+<path class="pulse-edge" d="M 280 150 L 450 150" fill="none" stroke="#69f6b8" stroke-width="2"></path>
+<path d="M 650 150 L 820 150" fill="none" stroke="#6e9fff" stroke-width="2"></path>
+<path d="M 550 200 L 550 350" fill="none" stroke="#48474a" stroke-width="2"></path>
+<path d="M 550 450 L 550 550" fill="none" stroke="#48474a" stroke-width="2"></path>
+<path d="M 280 150 L 550 400" fill="none" stroke="#48474a" stroke-width="2"></path>
+</svg>
+<div class="relative grid grid-cols-3 gap-24 items-center justify-items-center min-w-[1000px]">
+<!-- Root -->
+<div class="bg-surface-container-high p-4 rounded shadow-2xl dag-node-complete w-48 relative">
+<div class="text-[10px] text-secondary font-mono mb-1">WU-001 [COMPLETE]</div>
+<div class="text-xs font-bold">INIT_WORKSPACE</div>
+<div class="mt-3 flex gap-1">
+<div class="w-full bg-secondary/20 h-1 rounded"></div>
+</div>
+</div>
+<!-- Level 1 Active -->
+<div class="bg-surface-container-high p-4 rounded shadow-2xl dag-node-active w-48 scale-105 border border-primary/30 z-20">
+<div class="text-[10px] text-primary font-mono mb-1">WU-002 [IN_PROGRESS]</div>
+<div class="text-xs font-bold">GENERATE_SCHEMA</div>
+<div class="mt-3 space-y-1">
+<div class="w-full bg-surface-container-lowest h-1 rounded overflow-hidden">
+<div class="bg-primary h-full" style="width: 75%"></div>
+</div>
+<div class="text-[8px] text-zinc-500 font-mono">AGENT: implementer-1</div>
+</div>
+</div>
+<!-- Level 1 Pending -->
+<div class="bg-surface-container-high p-4 rounded shadow-2xl dag-node-pending w-48 opacity-60">
+<div class="text-[10px] text-zinc-500 font-mono mb-1">WU-003 [PENDING]</div>
+<div class="text-xs font-bold">DEPLOY_INFRA</div>
+</div>
+<!-- Level 2 Blocked -->
+<div class="col-start-2 bg-surface-container-high p-4 rounded shadow-2xl dag-node-blocked w-48">
+<div class="text-[10px] text-tertiary font-mono mb-1">WU-004 [BLOCKED]</div>
+<div class="text-xs font-bold">VALIDATE_AUTH</div>
+<div class="mt-2 text-[8px] text-tertiary font-mono italic">Waiting for HITL...</div>
+</div>
+<!-- Level 3 Failed -->
+<div class="col-start-2 bg-surface-container-high p-4 rounded shadow-2xl dag-node-failed w-48">
+<div class="text-[10px] text-error font-mono mb-1">WU-005 [FAILED]</div>
+<div class="text-xs font-bold">IMPORT_LEGACY</div>
+<div class="mt-2 text-[8px] text-error font-mono">Error: Connection Refused</div>
+</div>
+</div>
+</div>
+<!-- Agent Activity Feed (Bottom Bar) -->
+<div class="h-64 bg-surface-container-low border-t border-outline-variant/15 p-4 grid grid-cols-2 gap-4">
+<div class="bg-surface-container-lowest rounded border border-outline-variant/10 flex flex-col overflow-hidden">
+<div class="bg-surface-container-high px-3 py-2 flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-primary"></span>
+<span class="text-[10px] font-mono font-bold tracking-tight">AGENT: implementer-1</span>
+</div>
+<span class="text-[9px] px-2 py-0.5 rounded-full bg-primary-container/20 text-primary border border-primary/20 font-mono">IMPLEMENTING</span>
+</div>
+<div class="flex-1 p-3 font-mono text-[11px] text-primary/80 overflow-y-auto custom-scrollbar bg-black/40">
+<div class="opacity-50"># Initializing task WU-002...</div>
+<div class="opacity-70">&gt; Fetching repository state... [OK]</div>
+<div class="opacity-80">&gt; Analyzing database types...</div>
+<div class="opacity-100 text-on-surface"># GENERATING SQL MIGRATION...</div>
+<div class="opacity-100 text-on-surface">CREATE TABLE users_meta (</div>
+<div class="opacity-100 text-on-surface">  id UUID PRIMARY KEY,</div>
+<div class="opacity-100 text-on-surface ml-4">metadata JSONB</div>
+<div class="opacity-100 text-on-surface">);</div>
+<div class="animate-pulse">_</div>
+</div>
+</div>
+<div class="bg-surface-container-lowest rounded border border-outline-variant/10 flex flex-col overflow-hidden">
+<div class="bg-surface-container-high px-3 py-2 flex items-center justify-between">
+<div class="flex items-center gap-2">
+<span class="w-1.5 h-1.5 rounded-full bg-secondary"></span>
+<span class="text-[10px] font-mono font-bold tracking-tight">AGENT: reviewer-2</span>
+</div>
+<span class="text-[9px] px-2 py-0.5 rounded-full bg-secondary-container/20 text-secondary border border-secondary/20 font-mono">IDLE</span>
+</div>
+<div class="flex-1 p-3 font-mono text-[11px] text-zinc-500 overflow-y-auto custom-scrollbar bg-black/40">
+<div class="opacity-50"># Awaiting artifacts from implementer-1...</div>
+<div class="opacity-30">&gt; Pulse heartbeat active</div>
+<div class="opacity-30">&gt; Context window warmed (4.2k tokens)</div>
+</div>
+</div>
+</div>
+</section>
+<!-- Right Side: Review Feed & Interaction -->
+<section class="col-span-4 border-l border-outline-variant/15 flex flex-col h-full bg-surface-container-low">
+<!-- Six Hat Review Feed -->
+<div class="p-4 border-b border-outline-variant/15">
+<div class="flex items-center justify-between mb-4">
+<h2 class="text-xs font-headline font-bold uppercase tracking-widest text-zinc-400">Process Decisions</h2>
+<span class="text-[10px] text-zinc-600 font-mono">18 ITEMS</span>
+</div>
+<div class="space-y-3 max-h-[409px] overflow-y-auto custom-scrollbar pr-2">
+<!-- Approved Decision -->
+<div class="p-3 bg-surface-container-high/40 rounded border-l-2 border-secondary">
+<div class="flex justify-between items-start mb-2">
+<div class="flex gap-1.5">
+<span class="material-symbols-outlined text-xs bg-zinc-100 text-zinc-900 rounded p-0.5">account_balance</span> <!-- White Hat -->
+<span class="material-symbols-outlined text-xs bg-red-600 text-white rounded p-0.5">favorite</span> <!-- Red Hat -->
+<span class="material-symbols-outlined text-xs bg-blue-600 text-white rounded p-0.5">sync_alt</span> <!-- Blue Hat -->
+</div>
+<span class="text-[8px] text-secondary font-mono font-bold">APPROVED</span>
+</div>
+<p class="text-[11px] leading-relaxed text-on-surface-variant">
+                            Schema migration for <span class="text-on-surface font-mono">WU-001</span> matches architectural specs. Intuition suggests high maintainability. Process complete.
+                        </p>
+<div class="mt-2 text-[9px] text-zinc-600 font-mono">T+45m 12s | agent:hat-consensus</div>
+</div>
+<!-- Reshaped Decision -->
+<div class="p-3 bg-surface-container-high/40 rounded border-l-2 border-tertiary">
+<div class="flex justify-between items-start mb-2">
+<div class="flex gap-1.5">
+<span class="material-symbols-outlined text-xs bg-zinc-900 text-white rounded p-0.5">warning</span> <!-- Black Hat -->
+<span class="material-symbols-outlined text-xs bg-green-600 text-white rounded p-0.5">lightbulb</span> <!-- Green Hat -->
+</div>
+<span class="text-[8px] text-tertiary font-mono font-bold">RESHAPED</span>
+</div>
+<p class="text-[11px] leading-relaxed text-on-surface-variant">
+                            Identified SQL injection risk in <span class="text-on-surface font-mono">WU-002</span> query builder. Proposed parameterized alternative.
+                        </p>
+<div class="mt-2 text-[9px] text-zinc-600 font-mono">T+48m 04s | agent:hat-consensus</div>
+</div>
+</div>
+</div>
+<!-- Human-in-the-Loop Overlay (Blocking) -->
+<div class="flex-1 p-6 flex flex-col bg-surface-container-highest relative">
+<div class="mb-4">
+<div class="flex items-center gap-2 mb-2">
+<span class="material-symbols-outlined text-tertiary text-lg">contact_support</span>
+<h3 class="text-sm font-bold">AWAITING_HUMAN_CLARIFICATION</h3>
+</div>
+<div class="bg-surface-container-low p-4 rounded border border-tertiary/20 font-mono text-xs text-on-surface-variant leading-relaxed">
+<span class="text-tertiary font-bold">implementer-1:</span><br/>
+                        "The legacy system has a cyclic dependency between <code class="bg-black/40 px-1">Orders</code> and <code class="bg-black/40 px-1">Tracking</code>. Automatic resolution might lose data. 
+                        
+                        **Should I:**
+                        1. Use a temporary junction table?
+                        2. Force a schema break and handle it in application logic?"
+                    </div>
+</div>
+<div class="mt-auto flex flex-col gap-3">
+<textarea class="w-full bg-surface-container-lowest border border-outline-variant/30 rounded p-3 text-xs font-mono focus:ring-1 focus:ring-primary focus:border-primary outline-none custom-scrollbar" placeholder="Type your instruction..." rows="4"></textarea>
+<div class="flex gap-2">
+<button class="flex-1 py-2 bg-primary text-on-primary text-[11px] font-bold rounded uppercase tracking-wider hover:brightness-110 transition-all">
+                            SEND_COMMAND
+                        </button>
+<button class="px-4 py-2 bg-surface-container-high text-zinc-400 text-[11px] font-bold rounded uppercase tracking-wider hover:bg-white/5 transition-all">
+                            PAUSE_ALL
+                        </button>
+</div>
+<div class="mt-2 flex items-center justify-center gap-2">
+<div class="h-[1px] flex-1 bg-outline-variant/20"></div>
+<span class="text-[9px] text-zinc-600 font-mono italic">ORCHESTRATOR IS BLOCKED</span>
+<div class="h-[1px] flex-1 bg-outline-variant/20"></div>
+</div>
+</div>
+</div>
+</section>
+<!-- Workspace Explorer Overlay -->
+<section id="workspace-view" class="absolute inset-0 bg-surface-dim z-30 flex" style="display: none;">
+    <div class="w-80 border-r border-outline-variant/15 flex flex-col h-full bg-surface-container-low">
+        <div class="p-4 border-b border-outline-variant/15 flex items-center justify-between">
+            <h2 class="text-sm font-headline font-bold text-primary">WORKSPACE</h2>
+            <button id="refresh-workspace" class="text-zinc-500 hover:text-white"><span class="material-symbols-outlined text-sm">refresh</span></button>
+        </div>
+        <div id="file-tree" class="flex-1 overflow-auto p-4 custom-scrollbar text-xs font-mono space-y-1"></div>
+    </div>
+    <div class="flex-1 flex flex-col h-full bg-surface-container-lowest">
+        <div class="p-3 border-b border-outline-variant/15 text-xs text-zinc-400 font-mono" id="file-path-header">Select a file</div>
+        <div class="flex-1 p-4 overflow-auto custom-scrollbar relative">
+            <pre id="file-content-view" class="text-xs font-mono text-zinc-300"></pre>
+        </div>
+    </div>
+</section>
+</main>
+<!-- Contextual FAB (Only for Home/Dashboard) -->
+<div class="fixed bottom-6 right-6 flex flex-col gap-3 items-end">
+<div class="flex items-center gap-2 pr-2 opacity-0 hover:opacity-100 transition-opacity">
+<span class="text-[10px] font-mono bg-surface-container-highest px-2 py-1 rounded shadow-xl border border-outline-variant/20">SNAPSHOT_STATE</span>
+</div>
+<button class="w-14 h-14 bg-secondary text-on-secondary rounded-xl shadow-[0_10px_30px_rgba(105,246,184,0.3)] flex items-center justify-center group hover:scale-105 transition-transform active:scale-95">
+<span class="material-symbols-outlined text-3xl group-hover:rotate-12 transition-transform" style="font-variation-settings: 'FILL' 1;">add_circle</span>
+</button>
+</div>
+<!-- Background Elements -->
+<div class="fixed inset-0 pointer-events-none opacity-[0.03] z-[-1]" style="background-image: radial-gradient(#85adff 1px, transparent 1px); background-size: 40px 40px;"></div>
+    <script src="/static/app.js"></script>
+</body></html>
