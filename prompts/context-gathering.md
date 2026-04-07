@@ -87,11 +87,13 @@ Both flagged as `"source": "inferred"` with rationale in the output.
 
 ## Output
 
-When your work is complete, return ONLY a JSON object matching this schema — no prose before or after:
+When your work is complete, return ONLY a JSON object matching this schema — no prose before or after.
+For the `friendly_session_name`, do NOT reuse an existing identifier if you see it already in the `.dev-workflow/` directory.
 
 ```json
 {
   "problem_statement": "string — expanded, detailed problem statement",
+  "friendly_session_name": "string — a short, 2-3 word kebab-case identifier for this workflow (e.g. 'login-integration')",
   "reasoning_strategies_used": ["First Principles", "Inversion"],
   "acceptance_criteria": [
     {

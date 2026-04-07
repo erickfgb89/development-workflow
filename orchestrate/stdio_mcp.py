@@ -7,8 +7,12 @@ from mcp.server.stdio import stdio_server
 
 from .state import load_state, find_state_file
 
-async def run_stdio_mcp(project_root: str):
+async def run_stdio_mcp(project_root: str, session_name: str):
     root = Path(project_root).resolve()
+    if not session_name:
+        raise ValueError("MCP Server requires a session_name")
+        
+    session_root = root / ".dev-workflow" / session_name
     
     app = Server("dev-workflow-mcp")
 
@@ -33,11 +37,11 @@ async def run_stdio_mcp(project_root: str):
     @app.read_resource()
     async def read_resource(uri: str):
         if uri == "mcp://plan":
-            plan_file = root / "plan.md"
+            plan_file = session_root / "plan.md"
             content = plan_file.read_text() if plan_file.exists() else "No plan.md found."
             return content
         if uri == "mcp://state":
-            state_file = root / "state.json"
+            state_file = session_root / "state.json"
             content = state_file.read_text() if state_file.exists() else "No state.json found."
             return content
         raise ValueError(f"Unknown resource {uri}")
@@ -67,7 +71,7 @@ async def run_stdio_mcp(project_root: str):
     async def call_tool(name: str, arguments: dict):
         if name == "get_status":
             try:
-                state_file = find_state_file(root)
+                state_file = session_root / "state.json"
                 state = load_state(state_file)
                 total = len(state.get("work_units", {}))
                 pending = len([w for w in state["work_units"].values() if w["status"] == "pending"])
@@ -80,7 +84,7 @@ async def run_stdio_mcp(project_root: str):
             
         elif name == "read_wu":
             wu_id = arguments.get("wu_id")
-            wu_file = root / "work-units" / f"{wu_id}.md"
+            wu_file = session_root / "work-units" / f"{wu_id}.md"
             if wu_file.exists():
                 return [TextContent(type="text", text=wu_file.read_text())]
             return [TextContent(type="text", text=f"Work unit {wu_id} not found at {wu_file}.")]

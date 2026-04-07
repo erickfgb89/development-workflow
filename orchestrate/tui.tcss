@@ -1,0 +1,31 @@
+Screen {
+    layout: vertical;
+}
+
+
+#output-area {
+    height: 1fr;
+    border: solid $secondary;
+}
+
+#input-area {
+    dock: bottom;
+    height: 7;
+    layout: horizontal;
+}
+
+#message-input {
+    width: 1fr;
+    border: solid $primary;
+}
+
+#send-button {
+    width: 12;
+    height: 100%;
+}
+
+#loading-indicator {
+    display: none;
+    width: 4;
+    height: 100%;
+}

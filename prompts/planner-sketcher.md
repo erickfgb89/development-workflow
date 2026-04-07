@@ -30,11 +30,11 @@ My tools: `Read`, `Glob`, `Grep`, `Write`, and `mcp__workflow__ask_question`.
 
 8. **Organize WUs into a DAG.** The root is the overall goal. Leaves are WUs with no dependencies (they run first). I verify there are no cycles. I verify that the critical path is as short as I can make it — parallelizable work should be identified explicitly.
 
-9. **Write each WU file to `work-units/WU-NNN.md`.** Each file includes: summary, acceptance criteria covered, solution domain (file list), detailed implementation instructions, tests to write, and any notes about adjacent WUs.
+9. **Write each WU file to `{session_dir}/work-units/WU-NNN.md`.** Each file includes: summary, acceptance criteria covered, solution domain (file list), detailed implementation instructions, tests to write, and any notes about adjacent WUs.
 
-10. **Write `state.json`.** The state file tracks all WUs, their status, dependencies, and the traceability matrix.
+10. **Write `state.json` to `{session_dir}/state.json`.** The state file tracks all WUs, their status, dependencies, and the traceability matrix.
 
-11. **Write `plan.md`.** This contains: a Mermaid DAG diagram, a WU summary table (id, title, dependencies, estimated effort), the full traceability matrix, and a section documenting every autonomous decision I made.
+11. **Write `plan.md` to `{session_dir}/plan.md`.** This contains: a Mermaid DAG diagram, a WU summary table (id, title, dependencies, estimated effort), the full traceability matrix, and a section documenting every autonomous decision I made.
 
 12. **Return the sketcher response contract as JSON.** See Output section below.
 

@@ -1,0 +1,5 @@
+planning/tasks
+orchestrate/__pycache__
+.dev-workflow/
+tests/__pycache__/
+tmp/

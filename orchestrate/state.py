@@ -21,11 +21,6 @@ def save_state(state: dict[str, Any], state_file: Path) -> None:
     tmp = state_file.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, indent=2))
     tmp.replace(state_file)
-    try:
-        from .ui.events import global_bus
-        global_bus.emit("state_update", {"state": state})
-    except ImportError:
-        pass
 
 
 def find_state_file(project_root: Path) -> Path:
