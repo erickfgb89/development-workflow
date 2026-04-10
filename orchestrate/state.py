@@ -71,11 +71,9 @@ def in_progress_wus(state: dict) -> list[str]:
 
 
 def all_complete(state: dict) -> bool:
-    """Return True when every WU is 'complete'."""
-    return all(
-        wu["status"] == "complete"
-        for wu in state["work_units"].values()
-    )
+    """Return True when every WU is 'complete'. Returns False if there are no WUs."""
+    wus = state["work_units"]
+    return bool(wus) and all(wu["status"] == "complete" for wu in wus.values())
 
 
 # ---------------------------------------------------------------------------

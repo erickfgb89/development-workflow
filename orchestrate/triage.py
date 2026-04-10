@@ -24,6 +24,14 @@ Return ONLY this JSON object, no prose:
 """
 
 
+_RATE_LIMIT_PHRASES = ("you've hit your limit", "rate limit", "too many requests")
+
+
+def _is_rate_limit_error(context: dict[str, Any]) -> bool:
+    msg = context.get("failure_message", "").lower()
+    return any(phrase in msg for phrase in _RATE_LIMIT_PHRASES)
+
+
 async def handle_unexpected_failure(
     context: dict[str, Any],
     repo_root: str,
@@ -32,10 +40,14 @@ async def handle_unexpected_failure(
     Triage an unexpected agent failure. Returns {"action": ..., "message": ...}.
 
     Falls back to {"action": "user", "message": "..."} if the triage agent itself fails.
+    Rate limit errors are immediately classified as "retry" without calling the triage agent.
     """
+    if _is_rate_limit_error(context):
+        return {"action": "retry", "message": f"Rate limit detected for {context.get('wu_id', '?')} — will retry"}
+
     prompt = (
         TRIAGE_PROMPT
-        + f"\n\nFailure context:\n```json\n{json.dumps(context, indent=2)}\n```"
+        + f"\n\nFailure context:\n```json\n{json.dumps(context, indent=2, default=str)}\n```"
     )
     options = ClaudeAgentOptions(
         cwd=repo_root,

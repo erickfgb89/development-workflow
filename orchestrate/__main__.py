@@ -19,21 +19,22 @@ def parse_args() -> argparse.Namespace:
 async def main_async(args: argparse.Namespace) -> int:
     if args.mcp:
         from .stdio_mcp import run_stdio_mcp
-        project_root = args.resume if args.resume else args.project_root
+        project_root = args.project_root
         await run_stdio_mcp(project_root, args.mcp)
         return 0
 
     # TUI mode
     from .tui import OrchestratorApp
 
-    project_root = args.resume if args.resume else args.project_root
+    project_root = args.project_root
     if not project_root:
         print("error: project_root is required for a new session", file=sys.stderr)
         return 1
 
     app = OrchestratorApp(
         repo_root=project_root,
-        resume=bool(args.resume),
+        resume=args.resume,
+        transition_pauses=args.transition_pauses,
     )
     await app.run_async()
     return 0

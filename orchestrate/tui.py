@@ -218,10 +218,11 @@ class OrchestratorApp(App):
     _pending_input: asyncio.Future | None = None
     _orchestrator_input_queue: asyncio.Queue | None = None
 
-    def __init__(self, repo_root: str = ".", resume: bool = False, **kwargs) -> None:
+    def __init__(self, repo_root: str = ".", resume: str | None = None, transition_pauses: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
         self.repo_root = repo_root
         self.resume = resume
+        self.transition_pauses = transition_pauses
         # Maps tab_id -> RichLog; populated as agent tabs are created.
         self._agent_logs: dict[str, RichLog] = {}
 
@@ -236,15 +237,17 @@ class OrchestratorApp(App):
         set_tui(self)
         try:
             if self.resume:
-                await run_orchestrator(self.repo_root, "", resume=True)
+                await run_orchestrator(self.repo_root, "", session_name=self.resume, resume=True, transition_pauses=self.transition_pauses)
             else:
                 initial_prompt = await self.request_input("Describe what you want to build: ")
-                await run_orchestrator(self.repo_root, initial_prompt, resume=False)
+                await run_orchestrator(self.repo_root, initial_prompt, resume=False, transition_pauses=self.transition_pauses)
             self.append_to_output("[bold green]Orchestrator complete.[/bold green]")
         except SystemExit as e:
             self.append_to_output(f"[bold red]{e}[/bold red]")
         except Exception as e:
-            self.append_to_output(f"[bold red]Orchestrator error: {e}[/bold red]")
+            import traceback
+            tb = traceback.format_exc()
+            self.append_to_output(f"[bold red]Orchestrator error: {e}[/bold red]\n{tb}")
         finally:
             self.is_waiting = False
 
@@ -330,6 +333,12 @@ class OrchestratorApp(App):
         Called from orchestrator async code. Shows the prompt in the output panel,
         enables the input area, and returns the submitted text.
         """
+        # Switch to system tab so the user sees the prompt and any context written before it.
+        try:
+            tabbed = self.query_one("#output-area", TabbedContent)
+            tabbed.active = "tab-system"
+        except Exception:
+            pass
         self.append_to_output(f"[bold yellow]>>> {prompt_text}[/bold yellow]")
         self.is_waiting = False  # Enable input so user can respond
 

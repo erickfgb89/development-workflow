@@ -85,12 +85,14 @@ async def escalate(args: dict[str, Any]) -> dict[str, Any]:
             _tui_app.append_to_output(f"[bold red][Reviewer escalation — {wu_id}][/bold red]")
             _tui_app.append_to_output(f"[dim]Reason: {reason}[/dim]")
             _tui_app.append_to_output(f"[dim]Summary: {summary}[/dim]")
+            _tui_app.append_to_output("[dim]Step 1 of 2: enter approve or reject.[/dim]")
             while True:
                 raw = (await _tui_app.request_input("Decision [approve/reject]: ")).strip().lower()
                 if raw in ("approve", "reject"):
                     break
                 _tui_app.append_to_output("[yellow]Please enter 'approve' or 'reject'.[/yellow]")
-            guidance = (await _tui_app.request_input("Guidance for reviewer (optional, press Enter to skip): ")).strip()
+            _tui_app.append_to_output("[dim]Step 2 of 2: provide guidance for the reviewer (explain your reasoning, flag concerns, or clarify intent). Press Enter to skip.[/dim]")
+            guidance = (await _tui_app.request_input("Guidance: ")).strip()
             result = {"decision": raw, "guidance": guidance or ""}
             return {"content": [{"type": "text", "text": json.dumps(result)}]}
     except Exception:
@@ -101,6 +103,7 @@ async def escalate(args: dict[str, Any]) -> dict[str, Any]:
     print(f"Reason: {reason}")
     print(f"Summary: {summary}")
     print()
+    print("Step 1 of 2: enter approve or reject.")
 
     from .console import get_prompt_session, patch_console
     session = get_prompt_session()
@@ -112,7 +115,8 @@ async def escalate(args: dict[str, Any]) -> dict[str, Any]:
                 break
             print("Please enter 'approve' or 'reject'.")
 
-        guidance = (await session.prompt_async("Guidance for reviewer (optional, press Enter to skip): ")).strip()
+        print("\nStep 2 of 2: provide guidance for the reviewer (explain your reasoning, flag concerns, or clarify intent). Press Enter to skip.")
+        guidance = (await session.prompt_async("Guidance: ")).strip()
 
     result = {"decision": raw, "guidance": guidance or ""}
     return {"content": [{"type": "text", "text": json.dumps(result)}]}

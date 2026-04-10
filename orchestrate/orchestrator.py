@@ -83,9 +83,15 @@ def build_implementer_prompt(wu_id: str, state: dict, recall_context: dict | Non
     return prompt
 
 
-def build_reviewer_prompt(wu_id: str, implementer_report: dict) -> str:
+def build_reviewer_prompt(wu_id: str, implementer_report: dict, state: dict) -> str:
+    wu = state["work_units"][wu_id]
+    wu_file = Path(state["repo_root"]) / wu["file"]
+    wu_content = wu_file.read_text()
     base = load_prompt("reviewer")
-    return f"{base}\n\n---\n## Implementer report\n\n```json\n{json.dumps(implementer_report, indent=2)}\n```"
+    return (
+        f"{base}\n\n---\n## Work unit\n\n{wu_content}"
+        f"\n\n---\n## Implementer report\n\n```json\n{json.dumps(implementer_report, indent=2)}\n```"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +189,8 @@ async def call_agent(
         log_file.write(f"\n{'='*50}\n[{now}] RUN START\n{'='*50}\n")
         log_file.flush()
 
+    final_result: dict | None = None
+    final_error: Exception | None = None
     try:
         async for message in query(prompt=prompt, options=options):
             msg_repr = str(message)
@@ -206,12 +214,28 @@ async def call_agent(
                     await message_sink(agent_name, text)
 
             if isinstance(message, ResultMessage):
-                return parse_json_result(message.result)
+                if message.is_error:
+                    result_text = message.result or ""
+                    if "limit" in result_text.lower() or "rate" in result_text.lower():
+                        final_error = RuntimeError(f"Rate limit: {result_text!r}")
+                    else:
+                        final_error = RuntimeError(f"Agent returned error result: {result_text!r}")
+                else:
+                    try:
+                        final_result = parse_json_result(message.result)
+                    except Exception as e:
+                        final_error = e
+                # Don't break — let the generator exhaust naturally so the
+                # SDK can close the subprocess cleanly without a 10s timeout.
     finally:
         if log_file:
             log_file.write(f"\n{'='*50}\nRUN END\n{'='*50}\n")
             log_file.close()
 
+    if final_error is not None:
+        raise final_error
+    if final_result is not None:
+        return final_result
     raise RuntimeError("Agent did not return a ResultMessage")
 
 
@@ -238,7 +262,7 @@ async def handle_init(state: dict, repo_root: str) -> dict:
 async def handle_context_gather(state: dict, repo_root: str, initial_prompt: str, session_dir: Path) -> tuple[dict, dict]:
     options = make_options(
         cwd=repo_root,
-        model="claude-opus-4-6",
+        model="claude-sonnet-4-6",
         allowed_tools=["Read", "Glob", "Grep", "WebFetch", "WebSearch", "mcp__workflow__ask_question"],
     )
     prompt = load_prompt("context-gathering") + f"\n\n---\n## Initial context\n\n{initial_prompt}"
@@ -254,7 +278,7 @@ async def handle_context_gather(state: dict, repo_root: str, initial_prompt: str
 async def handle_plan_sketch(state: dict, repo_root: str, problem_statement: dict, session_dir: Path) -> tuple[dict, dict]:
     options = make_options(
         cwd=repo_root,
-        model="claude-opus-4-6",
+        model="claude-sonnet-4-6",
         allowed_tools=["Read", "Glob", "Grep", "Write", "mcp__workflow__ask_question"],
     )
     prompt = (
@@ -323,15 +347,18 @@ async def handle_reviewing(
         if isinstance(impl_result, Exception):
             reviews.append((wu_id, impl_result))
             continue
-        prompt = build_reviewer_prompt(wu_id, impl_result)
+        prompt = build_reviewer_prompt(wu_id, impl_result, state)
         options = make_options(
             cwd=worktree_path,
             model="claude-sonnet-4-6",
             allowed_tools=["Read", "Bash", "Glob", "Grep", "mcp__workflow__escalate"],
         )
-        result = await call_agent(prompt, options, agent_name=f"reviewer-{wu_id}", repo_root=repo_root,
-                                  message_sink=await _make_sink(f"reviewer-{wu_id}"))
-        reviews.append((wu_id, result))
+        try:
+            result = await call_agent(prompt, options, agent_name=f"reviewer-{wu_id}", repo_root=repo_root,
+                                      message_sink=await _make_sink(f"reviewer-{wu_id}"))
+            reviews.append((wu_id, result))
+        except Exception as e:
+            reviews.append((wu_id, e))
     return reviews
 
 
@@ -544,18 +571,26 @@ async def commit_batch(
 async def _pause_if_needed(data: Any, agent: str, enabled: bool) -> None:
     if not enabled:
         return
-    print(f"\n{'='*50}\nTRANSITION PAUSE: Output from {agent}\n{'='*50}")
-    if data is not None:
-        if isinstance(data, dict) or isinstance(data, list):
-            print(json.dumps(data, indent=2))
-        else:
+    header = f"{'='*50}\nTRANSITION PAUSE: Output from {agent}\n{'='*50}"
+    if _tui_app is not None:
+        _tui_app.append_to_output(header)
+        if data is not None:
             try:
-                print(str(data))
+                text = json.dumps(data, indent=2, default=str) if isinstance(data, (dict, list)) else str(data)
+                _tui_app.append_to_output(text)
+            except Exception:
+                _tui_app.append_to_output("<unprintable data>")
+        await tui_input("[PAUSED] Press Enter to continue to next phase... ")
+    else:
+        print(header)
+        if data is not None:
+            try:
+                print(json.dumps(data, indent=2, default=str) if isinstance(data, (dict, list)) else str(data))
             except Exception:
                 print("<unprintable data>")
-    from .console import get_prompt_session
-    session = get_prompt_session(".")
-    await session.prompt_async("\n[PAUSED] Press Enter to continue to next phase... ")
+        from .console import get_prompt_session
+        session = get_prompt_session(".")
+        await session.prompt_async("\n[PAUSED] Press Enter to continue to next phase... ")
 
 
 async def run_orchestrator(
@@ -579,6 +614,27 @@ async def run_orchestrator(
         
         state = load_state(state_file)
         state = await recover_session(state, state_file, repo_root)
+
+        # If the sketcher never completed (e.g. interrupted mid-sketch), re-run it.
+        if not state.get("work_units"):
+            ps_file = state.get("problem_statement_file")
+            if not ps_file or not Path(ps_file).exists():
+                raise FileNotFoundError(
+                    f"Cannot re-run sketcher: problem-statement.json not found at {ps_file!r}"
+                )
+            with open(ps_file) as f:
+                problem_statement = json.load(f)
+            emit_checkpoint("PLAN_SKETCH", "RESUME → PLAN_SKETCH (re-sketch)", "0 / 0 WUs complete")
+            state, plan_result = await handle_plan_sketch(state, repo_root, problem_statement, session_dir)
+            save_state(state, state_file)
+            await _pause_if_needed(plan_result, "planner-sketcher", transition_pauses)
+
+            total = len(state["work_units"])
+            emit_checkpoint(
+                "BATCH_EXTRACT", "PLAN_SKETCH → BATCH_EXTRACT",
+                f"0 / {total} WUs complete",
+                notes="Re-sketch complete — entering implementation loop",
+            )
     else:
         temp_id = str(uuid.uuid4())
         session_dir = workflows_dir / temp_id
@@ -636,6 +692,13 @@ async def run_orchestrator(
         save_state(state, state_file)
         await _pause_if_needed(plan_result, "planner-sketcher", transition_pauses)
 
+        total = len(state["work_units"])
+        emit_checkpoint(
+            "BATCH_EXTRACT", "PLAN_SKETCH → BATCH_EXTRACT",
+            f"0 / {total} WUs complete",
+            notes="Plan complete — entering implementation loop",
+        )
+
     # Main loop: BATCH_EXTRACT → IMPLEMENTING → REVIEWING → BATCH_COMMIT → repeat
     recall_contexts: dict[str, dict] = {}
 
@@ -669,7 +732,7 @@ async def run_orchestrator(
                                     notes="DAG deadlock — triage requested reshape")
                     options = make_options(
                         cwd=repo_root,
-                        model="claude-opus-4-6",
+                        model="claude-sonnet-4-6",
                         allowed_tools=["Read", "Glob", "Grep", "Write", "mcp__workflow__ask_question"],
                     )
                     feedback = json.dumps({"deadlock": triage_result.get("message")})
@@ -731,6 +794,9 @@ async def run_orchestrator(
                 if action == "retry":
                     set_wu_status(state, wu_id, "pending")
                     set_wu_field(state, wu_id, "recall_count", 0)
+                    # Clear stale worktree fields so state is accurate between retries
+                    set_wu_field(state, wu_id, "worktree_path", None)
+                    set_wu_field(state, wu_id, "worktree_branch", None)
                 elif action == "reshape":
                     needs_reshape.append(wu_id)
                     set_wu_status(state, wu_id, "failed")
@@ -782,7 +848,7 @@ async def run_orchestrator(
             feedback = json.dumps({"wus_needing_reshape": needs_reshape})
             options = make_options(
                 cwd=repo_root,
-                model="claude-opus-4-6",
+                model="claude-sonnet-4-6",
                 allowed_tools=["Read", "Glob", "Grep", "Write", "mcp__workflow__ask_question"],
             )
             prompt = load_prompt("planner-reshaper") + f"\n\n---\n## Feedback\n\n```json\n{feedback}\n```"
