@@ -84,10 +84,27 @@ def abort_merge(repo_root: str | Path) -> None:
     _run(["git", "merge", "--abort"], cwd=repo_root, check=False)
 
 
-def worktree_has_changes(worktree_path: str) -> bool:
-    """Return True if the worktree has any uncommitted changes or new commits."""
-    result = _run(["git", "status", "--porcelain"], cwd=worktree_path, check=False)
-    return bool(result.stdout.strip())
+def worktree_has_changes(worktree_path: str, base_branch: str | None = None) -> bool:
+    """Return True if the worktree has uncommitted changes or commits ahead of its base branch."""
+    # Check uncommitted changes
+    status = _run(["git", "status", "--porcelain"], cwd=worktree_path, check=False)
+    if status.stdout.strip():
+        return True
+    # Check for commits beyond the merge-base with the base branch.
+    # Claude Code commits its work, leaving the worktree clean but with new commits
+    # that git status won't report.
+    if base_branch:
+        merge_base = _run(
+            ["git", "merge-base", "HEAD", base_branch],
+            cwd=worktree_path, check=False
+        )
+        if merge_base.returncode == 0:
+            ahead = _run(
+                ["git", "rev-list", "--count", f"{merge_base.stdout.strip()}..HEAD"],
+                cwd=worktree_path, check=False
+            )
+            return ahead.returncode == 0 and ahead.stdout.strip() not in ("", "0")
+    return False
 
 
 def worktree_exists(worktree_path: str) -> bool:

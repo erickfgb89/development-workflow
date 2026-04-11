@@ -391,7 +391,7 @@ async def recover_session(state: dict, state_file: Path, repo_root: str) -> dict
         wu = state["work_units"][wu_id]
         wt_path = wu.get("worktree_path")
 
-        if wt_path and worktree_exists(wt_path) and worktree_has_changes(wt_path):
+        if wt_path and worktree_exists(wt_path) and worktree_has_changes(wt_path, state.get("branch")):
             recovered_to_review.append(wu_id)
         else:
             set_wu_status(state, wu_id, "pending")
