@@ -1,0 +1,22 @@
+{
+  "id": "WU-003",
+  "title": "Refactor run_batch() to use asyncio.TaskGroup for parallel WU execution",
+  "description": "Replace the sequential `for wu in batch` loop in run_batch() with asyncio.TaskGroup. Create merge_lock and state_lock as asyncio.Lock instances at the top of the function and pass them to every execute_wu() call. Collect verdicts into a dict keyed by wu_id using a closure or a shared results dict populated by each task coroutine. After the TaskGroup block closes (all tasks complete), iterate results to build the summary dict and print per-WU verdicts. Remove the per-iteration `needs_user_pivot` break \u2014 the orchestrator handles pivot detection after run_batch() returns. The summary dict shape {ready, passed, failed, reshaped} and the function's external signature are unchanged.",
+  "acceptance_criteria": [
+    "run_batch() creates merge_lock = asyncio.Lock() and state_lock = asyncio.Lock() before the TaskGroup",
+    "All WUs in the batch are launched as tasks inside a single `async with asyncio.TaskGroup() as tg:` block",
+    "Each task receives merge_lock and state_lock",
+    "The sequential `for wu in batch` loop is removed",
+    "Verdicts are collected after the TaskGroup closes and used to compute the summary dict",
+    "The function returns the same {ready, passed, failed, reshaped} dict",
+    "No sibling task is cancelled when a WU sets needs_user_pivot"
+  ],
+  "solution_domain": [
+    "src/overture/batch_manager.py"
+  ],
+  "dependencies": [
+    "WU-002"
+  ],
+  "status": "pending",
+  "estimate_minutes": 20
+}

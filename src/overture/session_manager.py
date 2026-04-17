@@ -84,6 +84,17 @@ class SessionManager:
         path.write_text(content, encoding="utf-8")
         return path
 
+    def write_planner_output(self, content: str) -> Path:
+        path = self._require_dir() / "planner_output"
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def read_planner_output(self) -> str:
+        path = self._require_dir() / "planner_output"
+        if not path.exists():
+            raise FileNotFoundError(f"planner_output not found in {self._require_dir()}")
+        return path.read_text(encoding="utf-8")
+
     def write_state(self, state: dict[str, Any]) -> Path:
         path = self._require_dir() / "state.json"
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")

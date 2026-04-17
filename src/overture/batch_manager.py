@@ -153,33 +153,80 @@ def _current_branch(repo: Path) -> str:
     return _git(["rev-parse", "--abbrev-ref", "HEAD"], repo)
 
 
+def _branch_exists(branch: str, repo: Path) -> bool:
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", branch],
+        cwd=repo,
+        capture_output=True,
+    )
+    return result.returncode == 0
+
+
 def create_worktree(wu_id: str, session_manager: SessionManager, target_repo: Path) -> Path:
-    """Create a git worktree for the WU on a new branch."""
+    """Create a git worktree for the WU on a dedicated branch.
+
+    If the branch already exists from a previous failed run, reuse it rather
+    than failing with -b.  The worktree directory is removed first if it is
+    stale (not registered with git) so the add doesn't collide on the path.
+    """
     branch = f"wu/{wu_id.lower()}"
     wt_path = session_manager.worktree_path(wu_id)
     wt_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Clean up a stale worktree directory that git no longer tracks.
+    if wt_path.exists():
+        try:
+            _git(["worktree", "remove", "--force", str(wt_path)], target_repo)
+        except subprocess.CalledProcessError:
+            pass
+
     base_branch = _current_branch(target_repo)
-    _git(["worktree", "add", "-b", branch, str(wt_path), base_branch], target_repo)
+    if _branch_exists(branch, target_repo):
+        # Branch left over from a previous attempt — reset it to base and reuse.
+        _git(["branch", "-f", branch, base_branch], target_repo)
+        _git(["worktree", "add", str(wt_path), branch], target_repo)
+    else:
+        _git(["worktree", "add", "-b", branch, str(wt_path), base_branch], target_repo)
+
     logger.info("Created worktree %s on branch %s", wt_path, branch)
     return wt_path
 
 
 def remove_worktree(wu_id: str, session_manager: SessionManager, target_repo: Path) -> None:
+    """Remove the worktree directory and delete the WU branch."""
+    branch = f"wu/{wu_id.lower()}"
     wt_path = session_manager.worktree_path(wu_id)
     try:
         _git(["worktree", "remove", "--force", str(wt_path)], target_repo)
     except subprocess.CalledProcessError:
         logger.warning("Could not remove worktree %s — manual cleanup may be needed.", wt_path)
+    # Always attempt branch deletion so it doesn't block future resume attempts.
+    try:
+        _git(["branch", "-D", branch], target_repo)
+    except subprocess.CalledProcessError:
+        logger.warning("Could not delete branch %s — may not exist or already deleted.", branch)
 
 
 def merge_branch(wu_id: str, target_repo: Path, commit_message: str) -> None:
-    """Merge the WU branch into the current branch (squash merge)."""
+    """Merge the WU branch into the current branch (squash merge).
+
+    The implementer edits files in the worktree directly; it does not commit them.
+    We therefore stage everything that changed before committing.
+    """
     branch = f"wu/{wu_id.lower()}"
     _git(["merge", "--squash", branch], target_repo)
-    _git(["commit", "-m", commit_message], target_repo)
-    # Delete the WU branch
-    _git(["branch", "-D", branch], target_repo)
+    _git(["add", "-A"], target_repo)
+    # Only commit if there is something staged — a no-op WU should not fail.
+    result = subprocess.run(
+        ["git", "diff", "--cached", "--quiet"],
+        cwd=target_repo,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        # returncode 1 means there are staged changes
+        _git(["commit", "-m", commit_message], target_repo)
+    else:
+        logger.warning("WU-%s squash merge produced no changes; skipping commit.", wu_id)
     logger.info("Merged %s into HEAD", branch)
 
 

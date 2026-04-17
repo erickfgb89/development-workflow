@@ -1,0 +1,31 @@
+{
+  "id": "WU-002",
+  "title": "Add merge_lock and state_lock parameters to execute_wu()",
+  "description": "Extend execute_wu() to accept two asyncio.Lock arguments. Wrap the merge_branch() call with `async with merge_lock`. Replace every write_state() site with the acquire\u2192reread\u2192mutate\u2192write pattern using state_lock. There are four write sites: (1) set in_progress at the top, (2) commit verdict in the try block, (3) AgentHaltError handler, (4) bare Exception handler. Sites 3 and 4 already re-read state before writing; add the lock around each. Site 1 and 2 require a fresh read_state() inside the lock so the local `state`/`wu_state` refs are not stale. Re-derive failure_count from the freshly read state inside the verdict lock block.",
+  "acceptance_criteria": [
+    "execute_wu() signature is: async def execute_wu(wu, session_manager, target_repo, context_md, *, merge_lock: asyncio.Lock, state_lock: asyncio.Lock) -> str",
+    "merge_branch() is called only while merge_lock is held",
+    "All four write_state() call sites acquire state_lock, call read_state() to get a fresh snapshot, apply only this WU's changes to that snapshot, then call write_state()",
+    "failure_count is read from the fresh state snapshot inside the verdict lock block, not from the stale top-of-function snapshot",
+    "Return type is unchanged (str verdict: 'pass', 'fail', or 'reshape')",
+    "The existing except Exception guard still swallows all errors and returns 'fail'"
+  ],
+  "solution_domain": [
+    "src/overture/batch_manager.py"
+  ],
+  "dependencies": [],
+  "status": "pending",
+  "estimate_minutes": 25,
+  "failure_count": 0,
+  "worktree_branch": null,
+  "implementer_report": {
+    "wu_id": "WU-002",
+    "status": "success",
+    "summary": "Extended execute_wu() with merge_lock and state_lock keyword-only parameters. Wrapped merge_branch() with async with merge_lock. Refactored all four write_state() sites to the acquire\u2192re-read\u2192mutate\u2192write pattern using state_lock. Re-derived failure_count from the fresh state snapshot inside the Site 2 verdict lock block. Return type (str) and except Exception guard are unchanged.",
+    "files_touched": [
+      "src/overture/batch_manager.py"
+    ],
+    "domain_breaches": [],
+    "commit_message": "feat(WU-002): add merge_lock and state_lock to execute_wu() for safe concurrent execution"
+  }
+}

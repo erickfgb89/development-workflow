@@ -19,7 +19,7 @@ from typing import Any
 
 import jsonschema
 
-from .sdk_wrapper import run_query_json
+from .sdk_wrapper import _extract_json, run_query
 from .session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -104,7 +104,11 @@ _PLANNER_PROMPT_TEMPLATE = textwrap.dedent("""\
     6. All WUs start with status "pending".
 
     ## Output format
-    Respond with ONLY a JSON object (no commentary, no fences) matching this example:
+    End your response with a JSON object matching this example — either as bare JSON
+    or inside a ```json ... ``` fence.  You may precede it with brief narrative text
+    (journal-style) that helps the user understand the shape of the plan, but keep
+    that preamble focused on what is useful to the reader.  The JSON must be the
+    final thing in your response.
 
     {example}
 """)
@@ -162,11 +166,16 @@ async def run_plan(
     if verbose:
         logger.info("Sending planning prompt to Planner agent…")
 
-    dag = await run_query_json(
+    raw_text, _ = await run_query(
         prompt,
         system_prompt=system_prompt,
         cwd=target_repo,
     )
+
+    # Persist raw output before parsing/validation so we can resume from it
+    session_manager.write_planner_output(raw_text)
+
+    dag = _extract_json(raw_text)
 
     # Validate against schema
     _validate(dag, "planner_output.json")
@@ -188,6 +197,36 @@ async def run_plan(
     wu_count = len(dag["work_units"])
     print(f"  Plan complete: {wu_count} Work Unit{'s' if wu_count != 1 else ''} across the DAG.")
 
+    return dag
+
+
+async def resume_from_planner_output(
+    session_manager: SessionManager,
+    *,
+    verbose: bool = False,
+) -> dict[str, Any]:
+    """Parse, validate, and persist state from a previously saved planner_output file.
+
+    Used when the planner wrote its raw output but crashed before state.json was written.
+    """
+    raw_text = session_manager.read_planner_output()
+    if verbose:
+        logger.info("Parsing saved planner_output…")
+
+    dag = _extract_json(raw_text)
+    _validate(dag, "planner_output.json")
+
+    dag["session_id"] = session_manager.session_id
+    state = _build_state(dag)
+    session_manager.write_state(state)
+
+    for wu in dag["work_units"]:
+        session_manager.write_wu(wu["id"], wu)
+
+    session_manager.write_plan(_render_plan_md(dag))
+
+    wu_count = len(dag["work_units"])
+    print(f"  Plan complete: {wu_count} Work Unit{'s' if wu_count != 1 else ''} across the DAG.")
     return dag
 
 

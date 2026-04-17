@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import readline  # noqa: F401 — enables word-navigation (Alt+Backspace, Ctrl+W) in input()
 import sys
 import textwrap
 from pathlib import Path
@@ -104,19 +105,17 @@ def _read_multiline(prompt_text: str) -> str:
     The backslash is stripped and input accumulates until a non-continuation
     line is entered.
     """
-    sys.stdout.write(prompt_text)
-    sys.stdout.flush()
     lines: list[str] = []
     continuation_prompt = "... "
+    current_prompt = prompt_text
     while True:
         try:
-            line = input()
+            line = input(current_prompt)
         except EOFError:
             break
         if line.endswith("\\"):
             lines.append(line[:-1])
-            sys.stdout.write(continuation_prompt)
-            sys.stdout.flush()
+            current_prompt = continuation_prompt
         else:
             lines.append(line)
             break
@@ -204,6 +203,12 @@ async def run_gather(session_manager: SessionManager, target_repo: Path) -> bool
                     "Now write the complete context.md document.  "
                     "Format it with: ## Goal, ## Current State, ## Constraints, "
                     "## Acceptance Criteria, and ## Notes sections.  "
+                    "\n\n"
+                    "IMPORTANT: The first line after ## Goal will be used as the session name. "
+                    "It must be 2–5 words, terse, and suitable for browser tabs, directory names, and logs. "
+                    "Examples: 'Implement user auth', 'Fix search performance', 'Add dark mode toggle'. "
+                    "Avoid complete sentences or complex grammar. "
+                    "\n\n"
                     "Output ONLY the markdown, no extra commentary."
                 )
                 session_manager.write_context(context_reply)
@@ -229,12 +234,26 @@ def _print_assistant(text: str) -> None:
 
 
 def _extract_slug(context_md: str) -> str:
-    """Pull the first heading or Goal line to use as a slug."""
+    """Pull the Goal line and enforce session naming constraints.
+
+    Session names must be 2-5 words, terse, and suitable for:
+    - Browser tabs / headers
+    - Directory names
+    - Log output / status lines
+
+    Returns the constraint-compliant slug, or empty string if none found.
+    """
     for line in context_md.splitlines():
         line = line.strip()
         if line.startswith("## Goal"):
             # Next non-empty line after the heading
             continue
         if line and not line.startswith("#"):
-            return line[:80]
+            # Extract first 2-5 words as the slug
+            words = line.split()
+            slug = " ".join(words[:5])  # Take up to 5 words
+            # Bail out if fewer than 2 words (too sparse to be meaningful)
+            if len(words) < 2:
+                continue
+            return slug
     return ""

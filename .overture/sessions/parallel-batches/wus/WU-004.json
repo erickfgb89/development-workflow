@@ -1,0 +1,19 @@
+{
+  "id": "WU-004",
+  "title": "Write unit tests for select_batch() \u2014 no-overlap and overlap cases",
+  "description": "Create tests/test_batch_manager.py with two synchronous pytest test functions covering the select_batch() domain-overlap logic. No mocking required \u2014 select_batch() is a pure function. Tests must not import from orchestrator, planner, or gatherer to keep them dependency-light.",
+  "acceptance_criteria": [
+    "test_select_batch_no_overlap: given 3 WUs with fully disjoint solution_domains, all 3 are returned in the batch",
+    "test_select_batch_with_overlap: given WU-A and WU-C sharing a file, and WU-B with no overlap, the batch contains WU-A and WU-B but not WU-C",
+    "A third test verifies that MAX_BATCH_SIZE caps the result even when all domains are disjoint",
+    "All tests pass with `pytest tests/test_batch_manager.py`"
+  ],
+  "solution_domain": [
+    "tests/test_batch_manager.py"
+  ],
+  "dependencies": [
+    "WU-001"
+  ],
+  "status": "pending",
+  "estimate_minutes": 15
+}

@@ -66,12 +66,25 @@ def main() -> None:
 async def _resume(target_repo: Path, session_slug: str, *, verbose: bool) -> None:
     """Resume an existing session from the batch-execution phase."""
     from .batch_manager import run_batch
-    from .planner import get_ready_wus
+    from .planner import get_ready_wus, resume_from_planner_output, run_plan
     from .session_manager import SessionManager
 
     sm = SessionManager(target_repo)
     sm.load_session(session_slug)
     print(f"Resuming session: {session_slug}")
+
+    # If state.json is missing, try to recover without calling the planner again.
+    state_path = sm.session_dir / "state.json"
+    if not state_path.exists():
+        planner_output_path = sm.session_dir / "planner_output"
+        if planner_output_path.exists():
+            # Planner ran but crashed before state was written — parse saved output.
+            print("No state.json found — recovering from saved planner_output…")
+            await resume_from_planner_output(sm, verbose=verbose)
+        else:
+            # Planner never ran at all — re-run it from context.md.
+            print("No state.json found — re-running planner from context.md…")
+            await run_plan(sm, target_repo, verbose=verbose)
 
     while True:
         state = sm.read_state()

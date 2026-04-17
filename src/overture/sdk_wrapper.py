@@ -65,6 +65,9 @@ def _check_for_agent_error(data: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
+DEFAULT_MODEL = "claude-sonnet-4-6"
+
+
 async def run_query(
     prompt: str,
     *,
@@ -82,7 +85,7 @@ async def run_query(
         permission_mode=permission_mode,  # type: ignore[arg-type]
         system_prompt=system_prompt,  # type: ignore[arg-type]
         cwd=cwd,
-        model=model,
+        model=model or DEFAULT_MODEL,
         max_turns=max_turns,
     )
 
@@ -132,18 +135,70 @@ async def run_query_json(
 
 
 def _extract_json(text: str) -> dict[str, Any]:
-    """Extract a JSON object from text, stripping optional markdown fences."""
-    text = text.strip()
-    # Strip ```json ... ``` or ``` ... ``` fences
-    if text.startswith("```"):
-        lines = text.splitlines()
-        # Drop first line (fence open) and last line (fence close)
-        inner = lines[1:-1] if lines[-1].strip().startswith("```") else lines[1:]
-        text = "\n".join(inner).strip()
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Agent did not return valid JSON: {exc}\n\nRaw:\n{text}") from exc
+    """Extract a JSON object from agent output.
+
+    Agents may prefix their JSON contract response with freeform narrative text.
+    This function finds the JSON object in the response, accepting it either
+    inside a markdown ```json ... ``` fence or as bare JSON.
+
+    Strategy:
+    1. Try fenced ```[json]...``` blocks from last to first — a fence is an
+       unambiguous signal that the model is deliberately emitting JSON.
+    2. Fall back to bare-JSON scanning: collect every top-level '{' and its
+       matching '}', then try candidates sorted largest-first so the outermost
+       (full) object wins over any nested sub-object.
+    """
+    import re
+
+    # --- Pass 1: fenced code blocks (preferred) ---
+    fenced: list[str] = []
+    for match in re.finditer(r"```(?:json)?\s*\n(.*?)```", text, re.DOTALL):
+        fenced.append(match.group(1).strip())
+
+    for candidate in reversed(fenced):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+    # --- Pass 2: bare JSON objects, largest span first ---
+    bare: list[str] = []
+    for i, ch in enumerate(text):
+        if ch != "{":
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        for j, c in enumerate(text[i:], start=i):
+            if escape:
+                escape = False
+                continue
+            if c == "\\" and in_string:
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    bare.append(text[i : j + 1])
+                    break
+
+    # Largest span = outermost object; most likely to be the top-level contract.
+    for candidate in sorted(bare, key=len, reverse=True):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+    raise ValueError(
+        f"Agent did not return valid JSON anywhere in its response.\n\nRaw:\n{text}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +230,7 @@ class GathererSession:
             permission_mode="acceptEdits",
             system_prompt=system_prompt,
             cwd=cwd,
-            model=model,
+            model=model or DEFAULT_MODEL,
             max_turns=200,
         )
 
@@ -194,8 +249,9 @@ class GathererSession:
         if self._client is None:
             raise RuntimeError("Not connected. Use as async context manager.")
 
+        await self._client.query(user_text)
         text_parts: list[str] = []
-        async for message in self._client.send_message(user_text):
+        async for message in self._client.receive_response():
             if isinstance(message, AssistantMessage):
                 for block in message.content:
                     if isinstance(block, TextBlock):

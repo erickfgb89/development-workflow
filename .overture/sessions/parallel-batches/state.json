@@ -1,0 +1,116 @@
+{
+  "session_id": "parallel-batches",
+  "work_units": {
+    "WU-001": {
+      "id": "WU-001",
+      "title": "Add pytest-asyncio as a test dependency",
+      "description": "Introduce a [test] optional-dependencies group in pyproject.toml and add pytest-asyncio to it. Also add asyncio_mode = 'auto' to [tool.pytest.ini_options] so async test functions are discovered without per-test decorators.",
+      "acceptance_criteria": [
+        "pyproject.toml contains [project.optional-dependencies] with a 'test' key listing pytest-asyncio",
+        "[tool.pytest.ini_options] contains asyncio_mode = 'auto'",
+        "Running `uv pip install -e '.[test]'` installs pytest-asyncio without error"
+      ],
+      "solution_domain": [
+        "pyproject.toml"
+      ],
+      "dependencies": [],
+      "status": "in_progress",
+      "estimate_minutes": 10,
+      "failure_count": 0,
+      "worktree_branch": null,
+      "error": "Command '['git', 'commit', '-m', 'feat(WU-001): add pytest-asyncio as test dependency with asyncio_mode=auto']' returned non-zero exit status 1."
+    },
+    "WU-002": {
+      "id": "WU-002",
+      "title": "Add merge_lock and state_lock parameters to execute_wu()",
+      "description": "Extend execute_wu() to accept two asyncio.Lock arguments. Wrap the merge_branch() call with `async with merge_lock`. Replace every write_state() site with the acquire\u2192reread\u2192mutate\u2192write pattern using state_lock. There are four write sites: (1) set in_progress at the top, (2) commit verdict in the try block, (3) AgentHaltError handler, (4) bare Exception handler. Sites 3 and 4 already re-read state before writing; add the lock around each. Site 1 and 2 require a fresh read_state() inside the lock so the local `state`/`wu_state` refs are not stale. Re-derive failure_count from the freshly read state inside the verdict lock block.",
+      "acceptance_criteria": [
+        "execute_wu() signature is: async def execute_wu(wu, session_manager, target_repo, context_md, *, merge_lock: asyncio.Lock, state_lock: asyncio.Lock) -> str",
+        "merge_branch() is called only while merge_lock is held",
+        "All four write_state() call sites acquire state_lock, call read_state() to get a fresh snapshot, apply only this WU's changes to that snapshot, then call write_state()",
+        "failure_count is read from the fresh state snapshot inside the verdict lock block, not from the stale top-of-function snapshot",
+        "Return type is unchanged (str verdict: 'pass', 'fail', or 'reshape')",
+        "The existing except Exception guard still swallows all errors and returns 'fail'"
+      ],
+      "solution_domain": [
+        "src/overture/batch_manager.py"
+      ],
+      "dependencies": [],
+      "status": "pending",
+      "estimate_minutes": 25,
+      "failure_count": 0,
+      "worktree_branch": null
+    },
+    "WU-003": {
+      "id": "WU-003",
+      "title": "Refactor run_batch() to use asyncio.TaskGroup for parallel WU execution",
+      "description": "Replace the sequential `for wu in batch` loop in run_batch() with asyncio.TaskGroup. Create merge_lock and state_lock as asyncio.Lock instances at the top of the function and pass them to every execute_wu() call. Collect verdicts into a dict keyed by wu_id using a closure or a shared results dict populated by each task coroutine. After the TaskGroup block closes (all tasks complete), iterate results to build the summary dict and print per-WU verdicts. Remove the per-iteration `needs_user_pivot` break \u2014 the orchestrator handles pivot detection after run_batch() returns. The summary dict shape {ready, passed, failed, reshaped} and the function's external signature are unchanged.",
+      "acceptance_criteria": [
+        "run_batch() creates merge_lock = asyncio.Lock() and state_lock = asyncio.Lock() before the TaskGroup",
+        "All WUs in the batch are launched as tasks inside a single `async with asyncio.TaskGroup() as tg:` block",
+        "Each task receives merge_lock and state_lock",
+        "The sequential `for wu in batch` loop is removed",
+        "Verdicts are collected after the TaskGroup closes and used to compute the summary dict",
+        "The function returns the same {ready, passed, failed, reshaped} dict",
+        "No sibling task is cancelled when a WU sets needs_user_pivot"
+      ],
+      "solution_domain": [
+        "src/overture/batch_manager.py"
+      ],
+      "dependencies": [
+        "WU-002"
+      ],
+      "status": "pending",
+      "estimate_minutes": 20,
+      "failure_count": 0,
+      "worktree_branch": null
+    },
+    "WU-004": {
+      "id": "WU-004",
+      "title": "Write unit tests for select_batch() \u2014 no-overlap and overlap cases",
+      "description": "Create tests/test_batch_manager.py with two synchronous pytest test functions covering the select_batch() domain-overlap logic. No mocking required \u2014 select_batch() is a pure function. Tests must not import from orchestrator, planner, or gatherer to keep them dependency-light.",
+      "acceptance_criteria": [
+        "test_select_batch_no_overlap: given 3 WUs with fully disjoint solution_domains, all 3 are returned in the batch",
+        "test_select_batch_with_overlap: given WU-A and WU-C sharing a file, and WU-B with no overlap, the batch contains WU-A and WU-B but not WU-C",
+        "A third test verifies that MAX_BATCH_SIZE caps the result even when all domains are disjoint",
+        "All tests pass with `pytest tests/test_batch_manager.py`"
+      ],
+      "solution_domain": [
+        "tests/test_batch_manager.py"
+      ],
+      "dependencies": [
+        "WU-001"
+      ],
+      "status": "pending",
+      "estimate_minutes": 15,
+      "failure_count": 0,
+      "worktree_branch": null
+    },
+    "WU-005": {
+      "id": "WU-005",
+      "title": "Write integration test: 3-WU parallel batch against a temp git repo",
+      "description": "Create tests/test_batch_integration.py with a pytest-asyncio async test. Use tmp_path to create a bare git repo, initialise it with an initial commit, and create a SessionManager pointed at it. Build a minimal state.json with 3 ready WUs. Stub execute_wu() (or patch run_query_json) so each task writes its verdict to a shared results store and performs a real worktree create/remove cycle against the temp repo. Assert: (1) all 3 WU branches were created and merged or cleaned up, (2) state.json after the batch contains all 3 WU IDs with no entry clobbering a sibling's status, (3) run_batch() returns summary with passed=3.",
+      "acceptance_criteria": [
+        "A pytest fixture creates a temporary git repository with at least one commit on main",
+        "The test calls run_batch() (not execute_wu() directly) against the fixture repo",
+        "After run_batch() returns, state.json on disk reflects the correct final status for all 3 WUs with no clobbered entries",
+        "The summary dict returned by run_batch() shows passed=3, failed=0, reshaped=0",
+        "The test is marked async and runs under pytest-asyncio with asyncio_mode='auto'",
+        "Test passes with `pytest tests/test_batch_integration.py`"
+      ],
+      "solution_domain": [
+        "tests/test_batch_integration.py"
+      ],
+      "dependencies": [
+        "WU-001",
+        "WU-002",
+        "WU-003"
+      ],
+      "status": "pending",
+      "estimate_minutes": 25,
+      "failure_count": 0,
+      "worktree_branch": null
+    }
+  },
+  "batch_number": 4
+}

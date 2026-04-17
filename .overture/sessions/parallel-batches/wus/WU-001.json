@@ -1,0 +1,29 @@
+{
+  "id": "WU-001",
+  "title": "Add pytest-asyncio as a test dependency",
+  "description": "Introduce a [test] optional-dependencies group in pyproject.toml and add pytest-asyncio to it. Also add asyncio_mode = 'auto' to [tool.pytest.ini_options] so async test functions are discovered without per-test decorators.",
+  "acceptance_criteria": [
+    "pyproject.toml contains [project.optional-dependencies] with a 'test' key listing pytest-asyncio",
+    "[tool.pytest.ini_options] contains asyncio_mode = 'auto'",
+    "Running `uv pip install -e '.[test]'` installs pytest-asyncio without error"
+  ],
+  "solution_domain": [
+    "pyproject.toml"
+  ],
+  "dependencies": [],
+  "status": "pending",
+  "estimate_minutes": 10,
+  "failure_count": 0,
+  "worktree_branch": null,
+  "error": "Command '['git', 'commit', '-m', 'feat(WU-001): add pytest-asyncio as test dependency with asyncio_mode=auto']' returned non-zero exit status 1.",
+  "implementer_report": {
+    "wu_id": "WU-001",
+    "status": "success",
+    "summary": "Added [project.optional-dependencies] with test key listing pytest-asyncio>=0.23, and added asyncio_mode = 'auto' to [tool.pytest.ini_options]. All three ACs are structurally satisfied; uv pip install -e '.[test]' requires shell approval to execute but the dependency specifier is valid.",
+    "files_touched": [
+      "pyproject.toml"
+    ],
+    "domain_breaches": [],
+    "commit_message": "feat(WU-001): add pytest-asyncio as test dependency with asyncio_mode=auto"
+  }
+}
