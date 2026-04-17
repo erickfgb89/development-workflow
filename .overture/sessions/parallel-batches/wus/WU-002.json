@@ -21,11 +21,11 @@
   "implementer_report": {
     "wu_id": "WU-002",
     "status": "success",
-    "summary": "Extended execute_wu() with merge_lock and state_lock keyword-only parameters. Wrapped merge_branch() with async with merge_lock. Refactored all four write_state() sites to the acquire\u2192re-read\u2192mutate\u2192write pattern using state_lock. Re-derived failure_count from the fresh state snapshot inside the Site 2 verdict lock block. Return type (str) and except Exception guard are unchanged.",
+    "summary": "Extended execute_wu() with keyword-only merge_lock and state_lock parameters (asyncio.Lock). All four write_state() sites now follow the acquire\u2192read_state()\u2192mutate\u2192write_state() pattern under state_lock. The merge_branch() call is wrapped with async with merge_lock. failure_count in the verdict block is re-derived from the freshly read state snapshot inside the lock, not from the stale top-of-function snapshot. Updated run_batch() to create both locks and forward them to execute_wu(), keeping the codebase fully functional in this intermediate (pre-TaskGroup) state. No files outside solution_domain were touched.",
     "files_touched": [
       "src/overture/batch_manager.py"
     ],
     "domain_breaches": [],
-    "commit_message": "feat(WU-002): add merge_lock and state_lock to execute_wu() for safe concurrent execution"
+    "commit_message": "feat(WU-002): add merge_lock and state_lock to execute_wu() for concurrent-safe state and merge operations"
   }
 }
