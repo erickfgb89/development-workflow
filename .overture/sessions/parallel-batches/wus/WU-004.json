@@ -15,5 +15,18 @@
     "WU-001"
   ],
   "status": "pending",
-  "estimate_minutes": 15
+  "estimate_minutes": 15,
+  "failure_count": 0,
+  "worktree_branch": null,
+  "implementer_report": {
+    "wu_id": "WU-004",
+    "status": "success",
+    "summary": "Created tests/test_batch_manager.py with three synchronous pytest functions covering select_batch() domain-overlap logic: (1) test_select_batch_no_overlap verifies all 3 disjoint WUs are returned, (2) test_select_batch_with_overlap verifies WU-C is excluded when it shares a file with WU-A while WU-B is kept, (3) test_select_batch_max_batch_size verifies the batch is capped at MAX_BATCH_SIZE even when all 7 candidate WUs are fully disjoint. Also created tests/__init__.py. No imports from orchestrator, planner, or gatherer.",
+    "files_touched": [
+      "tests/__init__.py",
+      "tests/test_batch_manager.py"
+    ],
+    "domain_breaches": [],
+    "commit_message": "test(WU-004): add unit tests for select_batch() no-overlap, overlap, and size-cap cases"
+  }
 }

@@ -66,10 +66,55 @@
         "src/overture/batch_manager.py"
       ],
       "dependencies": [],
-      "status": "in_progress",
+      "status": "completed",
       "estimate_minutes": 25,
       "failure_count": 0,
-      "worktree_branch": null
+      "worktree_branch": null,
+      "last_review": {
+        "wu_id": "WU-002",
+        "verdict": "pass",
+        "summary": "White-Hat: All six ACs are satisfied. The signature is keyword-only with correct type annotations (line 237\u2013245). merge_branch() has exactly one call site and it is wrapped in `async with merge_lock` (lines 285\u2013286). All four write_state() sites follow the acquire\u2192read_state()\u2192mutate\u2192write_state() pattern (sites 1/2/3/4 at lines 259\u2013262, 290\u2013313, 322\u2013328, 333\u2013338). failure_count is re-derived from the freshly read wu_state inside the verdict lock (line 293), not from the stale top-of-function snapshot; the earlier bare read at line 275 is correctly scoped to reviewer-context only and is explicitly commented as such. Return type annotation is `-> str` and all return paths yield 'pass', 'fail', or 'reshape'. The bare `except Exception` guard (lines 331\u2013339) still swallows all errors and returns 'fail'. Black-Hat: (1) If merge_branch() raises, the context manager releases merge_lock cleanly and the exception falls through to the bare Exception handler, which marks status='failed' \u2014 correct. (2) The worktree finally-block (lines 341\u2013343) always executes, preventing orphaned worktrees. (3) The batch_number write in run_batch() (lines 413\u2013415) bypasses state_lock, but it occurs before the concurrent execution loop and is a known Phase-2-only pattern \u2014 not a defect against this WU's scope. (4) mark_downstream_blocked() is called inside the state_lock at every reshape/pivot path, which is correct since it mutates the freshly acquired state snapshot. No edge-case holes found that fall within this WU's scope. Domain: Only src/overture/batch_manager.py was modified; run_batch() update is justified as the direct caller that must create and forward the new locks.",
+        "file_feedback": [
+          {
+            "file": "src/overture/batch_manager.py",
+            "verdict": "approved",
+            "notes": "execute_wu() signature, all four state_lock sites, the merge_lock wrapping, and failure_count re-derivation are all correct. run_batch() cleanly instantiates both locks before the WU loop and forwards them as keyword arguments, keeping the call site forward-compatible with the Phase-3 TaskGroup refactor described in the module docstring."
+          }
+        ],
+        "ac_coverage": [
+          {
+            "ac": "execute_wu() signature is: async def execute_wu(wu, session_manager, target_repo, context_md, *, merge_lock: asyncio.Lock, state_lock: asyncio.Lock) -> str",
+            "covered": true,
+            "notes": "Lines 237\u2013245 match the required signature exactly, including the keyword-only separator and return type annotation."
+          },
+          {
+            "ac": "merge_branch() is called only while merge_lock is held",
+            "covered": true,
+            "notes": "Single call site at lines 285\u2013286 inside `async with merge_lock`."
+          },
+          {
+            "ac": "All four write_state() call sites acquire state_lock, call read_state() to get a fresh snapshot, apply only this WU's changes to that snapshot, then call write_state()",
+            "covered": true,
+            "notes": "Sites 1 (lines 259\u2013262), 2 (290\u2013313), 3 (322\u2013328), and 4 (333\u2013338) all follow the pattern faithfully."
+          },
+          {
+            "ac": "failure_count is read from the fresh state snapshot inside the verdict lock block, not from the stale top-of-function snapshot",
+            "covered": true,
+            "notes": "Line 293 re-derives failure_count from wu_state after read_state() inside state_lock. The earlier bare read at line 275 is explicitly limited to reviewer-context and does not feed any write path."
+          },
+          {
+            "ac": "Return type is unchanged (str verdict: 'pass', 'fail', or 'reshape')",
+            "covered": true,
+            "notes": "-> str annotation on line 245; every return path yields one of the three expected string literals."
+          },
+          {
+            "ac": "The existing except Exception guard still swallows all errors and returns 'fail'",
+            "covered": true,
+            "notes": "Lines 331\u2013339: broad except Exception, logs, updates state, returns 'fail' \u2014 same semantics as before, now with state_lock wrapping the write."
+          }
+        ],
+        "failure_count": 0
+      }
     },
     "WU-003": {
       "id": "WU-003",
@@ -90,7 +135,7 @@
       "dependencies": [
         "WU-002"
       ],
-      "status": "pending",
+      "status": "in_progress",
       "estimate_minutes": 20,
       "failure_count": 0,
       "worktree_branch": null
@@ -111,7 +156,7 @@
       "dependencies": [
         "WU-001"
       ],
-      "status": "pending",
+      "status": "in_progress",
       "estimate_minutes": 15,
       "failure_count": 0,
       "worktree_branch": null
@@ -142,5 +187,5 @@
       "worktree_branch": null
     }
   },
-  "batch_number": 4
+  "batch_number": 6
 }
