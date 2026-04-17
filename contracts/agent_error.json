@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://overture.dev/contracts/agent_error.json",
+  "title": "AgentError",
+  "description": "Universal error envelope any Overture agent may return instead of its normal output contract. When an agent encounters a blocker it cannot resolve — a missing prerequisite, contradictory specification, environment gap, or any condition that makes proceeding unsafe — it responds with this structure. The orchestrator detects it, halts the affected Work Unit, and surfaces the report for human review.",
+  "type": "object",
+  "required": ["error", "wu_id", "agent_role", "blocker", "resolution_hint"],
+  "additionalProperties": false,
+  "properties": {
+    "error": {
+      "type": "boolean",
+      "const": true,
+      "description": "Always true. Acts as a discriminator so the orchestrator can identify this envelope without schema-testing every field."
+    },
+    "wu_id": {
+      "type": "string",
+      "pattern": "^WU-[0-9]{3}$",
+      "description": "The Work Unit this agent was executing when the blocker was encountered."
+    },
+    "agent_role": {
+      "type": "string",
+      "enum": ["planner", "implementer", "reviewer"],
+      "description": "Which agent role is filing this report."
+    },
+    "blocker": {
+      "type": "string",
+      "minLength": 20,
+      "description": "Precise description of what cannot be resolved. Must name the exact missing or contradictory element — not a vague statement like 'it failed'. Written as a medical incident report: what was attempted, what was found, why it blocks forward progress."
+    },
+    "resolution_hint": {
+      "type": "string",
+      "minLength": 10,
+      "description": "What information, decision, or prerequisite would unblock this agent. This is the question the orchestrator will surface to the human."
+    },
+    "context": {
+      "type": "object",
+      "description": "Optional structured context to help diagnosis.",
+      "additionalProperties": true,
+      "properties": {
+        "files_inspected": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Files the agent read or attempted to read before hitting the blocker."
+        },
+        "commands_run": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Shell commands the agent ran before hitting the blocker."
+        },
+        "partial_output": {
+          "type": "string",
+          "description": "Any partial work produced before the agent stopped. Helps the next agent avoid redundant work."
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "error": true,
+      "wu_id": "WU-003",
+      "agent_role": "implementer",
+      "blocker": "The WU requires writing to data/images/ but DATA_DIR is not set in the environment and no default is specified in the codebase. Attempting to proceed would silently write files to the process working directory, violating the AC 'Files are stored under data/images/'.",
+      "resolution_hint": "Please specify where DATA_DIR should resolve in the development environment, or add a fallback default (e.g. Path(__file__).parent / 'data') to the config layer.",
+      "context": {
+        "files_inspected": ["src/config.py", ".env.example"],
+        "commands_run": ["grep -r DATA_DIR src/"],
+        "partial_output": ""
+      }
+    }
+  ]
+}

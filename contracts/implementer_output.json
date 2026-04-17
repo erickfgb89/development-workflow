@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://overture.dev/contracts/implementer_output.json",
+  "title": "ImplementerOutput",
+  "description": "Output contract for the Implementer agent. Reports what was done and any domain breaches.",
+  "type": "object",
+  "examples": [
+    {
+      "wu_id": "WU-001",
+      "status": "success",
+      "summary": "Created ImageStore class with save() and retrieve() methods. All three ACs pass.",
+      "files_touched": [
+        "src/storage.py",
+        "tests/test_storage.py"
+      ],
+      "domain_breaches": [],
+      "commit_message": "feat(WU-001): implement local image storage service"
+    },
+    {
+      "wu_id": "WU-002",
+      "status": "failure",
+      "summary": "Could not locate the data directory configuration — the path is injected at runtime and the test fixtures do not set it up.",
+      "files_touched": [],
+      "domain_breaches": [],
+      "commit_message": "",
+      "error_detail": "EnvironmentError: DATA_DIR is not set. The WU cannot proceed without a known storage root. Please clarify where data/images/ should resolve in the test environment."
+    }
+  ],
+  "required": ["wu_id", "status", "summary", "files_touched", "commit_message"],
+  "additionalProperties": false,
+  "properties": {
+    "wu_id": {
+      "type": "string",
+      "pattern": "^WU-[0-9]{3}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["success", "failure"],
+      "description": "Whether implementation succeeded."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Concise summary of changes made."
+    },
+    "files_touched": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "All files created or modified."
+    },
+    "domain_breaches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "justification"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string" },
+          "justification": {
+            "type": "string",
+            "description": "Reason why a file outside solution_domain was touched."
+          }
+        }
+      },
+      "description": "Files touched that were NOT in the solution_domain, with justifications."
+    },
+    "commit_message": {
+      "type": "string",
+      "description": "Proposed git commit message."
+    },
+    "error_detail": {
+      "type": "string",
+      "description": "Error message if status is failure."
+    }
+  }
+}

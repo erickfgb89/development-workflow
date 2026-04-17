@@ -1,5 +1,8 @@
 .dev-workflow/
-orchestrate/__pycache__/
+__pycache__/
 tmp/
 /tmp/
 */__pycache__/
+*.egg-info/
+dist/
+.venv/

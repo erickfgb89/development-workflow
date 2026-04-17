@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://overture.dev/contracts/reviewer_output.json",
+  "title": "ReviewerOutput",
+  "description": "Output contract for the Reviewer agent. Clinical audit of the Implementer's diff.",
+  "type": "object",
+  "examples": [
+    {
+      "wu_id": "WU-001",
+      "verdict": "pass",
+      "summary": "White-Hat: all three ACs are covered by the new tests and the implementation is clean. Black-Hat: the 404 path is tested. No domain breaches.",
+      "file_feedback": [
+        { "file": "src/storage.py", "verdict": "approved", "notes": "save() and retrieve() are correct. UUID generation is collision-safe." },
+        { "file": "tests/test_storage.py", "verdict": "approved", "notes": "Covers upload, retrieve, and missing-file paths." }
+      ],
+      "ac_coverage": [
+        { "ac": "POST /images saves the file to disk and returns a UUID", "covered": true },
+        { "ac": "GET /images/{id} returns the file or 404 if not found", "covered": true },
+        { "ac": "Files are stored under data/images/", "covered": true }
+      ],
+      "failure_count": 0
+    },
+    {
+      "wu_id": "WU-002",
+      "verdict": "reshape",
+      "summary": "The WU as scoped assumes DATA_DIR is always set, but the context.md makes no mention of environment variable management. This is a planning gap — the WU needs a predecessor that establishes the config layer.",
+      "file_feedback": [],
+      "ac_coverage": [
+        { "ac": "GET / returns 200 with a JSON health check", "covered": false, "notes": "Route file was not created." }
+      ],
+      "failure_count": 1
+    }
+  ],
+  "required": ["wu_id", "verdict", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "wu_id": {
+      "type": "string",
+      "pattern": "^WU-[0-9]{3}$"
+    },
+    "verdict": {
+      "type": "string",
+      "enum": ["pass", "fail", "reshape"],
+      "description": "pass = merge approved. fail = implementation must be redone. reshape = WU scope needs replanning."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One-paragraph clinical assessment."
+    },
+    "file_feedback": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "verdict", "notes"],
+        "additionalProperties": false,
+        "properties": {
+          "file": { "type": "string" },
+          "verdict": {
+            "type": "string",
+            "enum": ["approved", "needs_changes"]
+          },
+          "notes": { "type": "string" }
+        }
+      },
+      "description": "Per-file feedback."
+    },
+    "ac_coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ac", "covered"],
+        "additionalProperties": false,
+        "properties": {
+          "ac": { "type": "string" },
+          "covered": { "type": "boolean" },
+          "notes": { "type": "string" }
+        }
+      },
+      "description": "Whether each AC was satisfied."
+    },
+    "failure_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Cumulative failure count for this WU. Triggers user pivot at 2."
+    }
+  }
+}
