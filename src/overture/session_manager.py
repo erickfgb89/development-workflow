@@ -98,6 +98,12 @@ class SessionManager:
     def write_state(self, state: dict[str, Any]) -> Path:
         path = self._require_dir() / "state.json"
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        # Notify web UI broadcaster if it's running
+        try:
+            from .web_ui.server import notify_state_change
+            notify_state_change(state)
+        except Exception:
+            pass
         return path
 
     def read_state(self) -> dict[str, Any]:

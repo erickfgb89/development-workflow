@@ -19,10 +19,15 @@ from .planner import get_ready_wus, run_plan
 from .session_manager import SessionManager
 
 
-async def run(target_repo: Path, *, verbose: bool = False) -> None:
+async def run(target_repo: Path, *, verbose: bool = False, ui: bool = False, port: int = 7337) -> None:
     """Full orchestration lifecycle for a target repository."""
     sm = SessionManager(target_repo)
     sm.new_session()
+
+    ui_task = None
+    if ui:
+        from .web_ui.server import start_ui_server
+        ui_task = asyncio.create_task(start_ui_server(sm, port=port))
 
     # ---- Phase 1: Gather ------------------------------------------------
     print()
@@ -71,6 +76,13 @@ async def run(target_repo: Path, *, verbose: bool = False) -> None:
 
         if summary["ready"] == 0:
             break
+
+    if ui_task:
+        ui_task.cancel()
+        try:
+            await ui_task
+        except asyncio.CancelledError:
+            pass
 
     print(f"\nSession: {sm.session_id}")
     print(f"State:   {sm.session_dir / 'state.json'}")

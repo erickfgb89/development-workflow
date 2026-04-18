@@ -9,6 +9,13 @@ dependencies = [
     "jsonschema>=4.23.0",
 ]
 
+[project.optional-dependencies]
+ui = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.9",
+]
+
 [project.scripts]
 overture = "overture.__main__:main"
 

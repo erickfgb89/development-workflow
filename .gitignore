@@ -6,3 +6,4 @@ tmp/
 *.egg-info/
 dist/
 .venv/
+.overture/sessions/

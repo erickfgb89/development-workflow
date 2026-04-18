@@ -1,0 +1,1316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div id="app" x-data="app()" x-init="init()">
+
+  <!-- WebSocket reconnection banner -->
+  <div class="ws-banner" :class="wsStatus === 'disconnected' ? 'disconnected' : 'hidden'">
+    Connection lost — retrying…
+  </div>
+
+  <!-- ================================================================
+       TOP BAR
+       ================================================================ -->
+  <header id="topbar" :class="sidebarCollapsed ? 'collapsed' : ''">
+    <div class="logo-area">
+      <div class="logo">overture<span>.</span></div>
+      <button class="toggle-sidebar" @click="sidebarCollapsed = !sidebarCollapsed" title="Toggle sidebar">
+        <span x-text="sidebarCollapsed ? '→' : '←'"></span>
+      </button>
+    </div>
+
+    <!-- Session tabs -->
+    <div class="sess-tabs">
+      <template x-for="sess in sessions" :key="sess">
+        <button class="sess-tab" :class="activeSession === sess ? 'active' : ''"
+          @click="switchSession(sess)">
+          <span x-text="sess"></span>
+          <button class="close-btn" @click.stop="closeSession(sess)" title="Close tab">×</button>
+        </button>
+      </template>
+      <button class="sess-tab add-tab" @click="openLanding()" title="New session">+</button>
+    </div>
+
+    <!-- Connection indicator -->
+    <div class="conn-indicator">
+      <span class="conn-dot" :class="wsStatus"></span>
+      <span x-show="wsStatus === 'connected'">live · ws</span>
+      <span x-show="wsStatus === 'reconnecting'">reconnecting…</span>
+      <span x-show="wsStatus === 'disconnected'">disconnected</span>
+    </div>
+  </header>
+
+  <!-- ================================================================
+       CONTENT AREA
+       ================================================================ -->
+  <div id="content-area" :class="sidebarCollapsed ? 'collapsed' : ''">
+
+    <!-- ---- Sidebar (hidden on landing) ---- -->
+    <nav id="sidebar" x-show="activeSession && currentPage !== 'landing'">
+      <a class="nav-item" :class="currentPage === 'dag' ? 'active' : ''" @click="navigate('dag')">
+        <span class="nav-icon">◇</span>
+        <span class="nav-label" x-show="!sidebarCollapsed">DAG</span>
+      </a>
+      <a class="nav-item" :class="currentPage === 'context' ? 'active' : ''" @click="navigate('context')">
+        <span class="nav-icon">≡</span>
+        <span class="nav-label" x-show="!sidebarCollapsed">Context</span>
+      </a>
+      <a class="nav-item" :class="currentPage === 'plan' ? 'active' : ''" @click="navigate('plan')">
+        <span class="nav-icon">□</span>
+        <span class="nav-label" x-show="!sidebarCollapsed">Plan</span>
+      </a>
+      <a class="nav-item" :class="currentPage === 'agents' ? 'active' : ''" @click="navigate('agents')">
+        <span class="nav-icon">⎚</span>
+        <span class="nav-label" x-show="!sidebarCollapsed">Agents</span>
+      </a>
+
+      <div class="sidebar-sep"></div>
+
+      <div class="phase-badge" x-show="!sidebarCollapsed">
+        <div class="text-muted" style="font-size:10px;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;">phase</div>
+        <span class="pill" :class="phaseClass()" x-text="sessionPhase()"></span>
+      </div>
+      <div class="phase-badge" x-show="sidebarCollapsed" style="text-align:center;padding:6px 4px;">
+        <span class="status-dot" :class="phaseDotClass()" style="width:10px;height:10px;display:inline-block;"></span>
+      </div>
+    </nav>
+
+    <!-- Sidebar placeholder for landing (keeps layout consistent) -->
+    <div x-show="!activeSession || currentPage === 'landing'"></div>
+
+    <!-- ================================================================
+         MAIN VIEW
+         ================================================================ -->
+    <main id="main-view">
+
+      <!-- ========================================================
+           PAGE: LANDING / NEW SESSION
+           ======================================================== -->
+      <div x-show="currentPage === 'landing'" id="page-landing">
+        <div class="landing-card">
+          <h1>Start or resume a session</h1>
+          <p class="sub">Point Overture at a git repo. It breaks your goal into parallel work units.</p>
+
+          <div class="field">
+            <label>Project directory</label>
+            <div style="position:relative;">
+              <input class="input" type="text" x-model="landing.repoInput"
+                placeholder="Search for a git repository…"
+                @input="filterRepos()"
+                @focus="showRepoDrop = landing.repoSuggestions.length > 0"
+                @keydown.escape="showRepoDrop = false"
+                autocomplete="off">
+              <div class="repo-dropdown" x-show="showRepoDrop" @click.outside="showRepoDrop = false">
+                <template x-for="repo in landing.repoSuggestions" :key="repo">
+                  <div class="repo-dropdown-item" @click="selectRepo(repo)" x-text="repo"></div>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="row between">
+              <label style="margin:0">Resume existing session</label>
+              <div class="toggle-wrap" :class="landing.resumeOn ? 'on' : ''" @click="landing.resumeOn = !landing.resumeOn">
+                <span class="toggle-track"></span>
+                <span x-text="landing.resumeOn ? 'on' : 'off'"></span>
+              </div>
+            </div>
+            <div x-show="landing.resumeOn" style="margin-top:8px;">
+              <select class="input" x-model="landing.selectedSlug">
+                <option value="">— select a session —</option>
+                <template x-for="slug in landing.existingSlugs" :key="slug">
+                  <option :value="slug" x-text="slug"></option>
+                </template>
+              </select>
+            </div>
+          </div>
+
+          <div class="landing-actions">
+            <template x-if="landing.resumeOn">
+              <button class="btn primary" @click="resumeSession()">Resume</button>
+            </template>
+            <template x-if="!landing.resumeOn">
+              <button class="btn primary" @click="startNewSession()">Start new</button>
+            </template>
+            <button class="btn ghost" @click="landing.resumeOn ? startNewSession() : null"
+              x-show="landing.resumeOn">Start new instead</button>
+          </div>
+
+          <!-- Danger Zone accordion -->
+          <div class="danger-zone">
+            <div class="danger-zone-head" @click="landing.dangerOpen = !landing.dangerOpen">
+              <span>▸ Advanced / Danger Zone</span>
+              <span class="mono text-muted">collapsed by default</span>
+            </div>
+            <div class="danger-zone-body" :class="landing.dangerOpen ? 'open' : ''">
+              <div class="danger-zone-item">
+                <input type="checkbox" id="reset-failed-chk" x-model="landing.resetFailed">
+                <label for="reset-failed-chk" style="font-size:13px;color:var(--text-2);">
+                  Reset failed WUs <span class="mono text-muted">(--reset-failed)</span>
+                </label>
+              </div>
+              <div class="danger-zone-item">
+                <input type="checkbox" id="reshape-plan-chk" x-model="landing.reshapeOn" style="margin-top:3px;">
+                <div style="flex:1;">
+                  <label for="reshape-plan-chk" style="font-size:13px;color:var(--text-2);display:block;margin-bottom:6px;">
+                    Reshape plan
+                  </label>
+                  <textarea class="input" x-show="landing.reshapeOn" x-model="landing.reshapeInstructions"
+                    placeholder="Reshape instructions — describe what should change…" style="min-height:64px;"></textarea>
+                </div>
+              </div>
+              <div class="row between" style="margin-top:8px;">
+                <span class="mono text-muted" style="font-size:11px;">destructive →</span>
+                <button class="btn danger" @click="abortSession()">Abort session</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================================
+           PAGE: CONTEXT GATHERING
+           ======================================================== -->
+      <div x-show="currentPage === 'context'" class="view-page" id="page-context">
+        <h2 style="font-size:20px;font-weight:700;margin-bottom:3px;">Tell the Gatherer what you want to build</h2>
+        <p class="text-muted" style="font-size:13px;margin-bottom:16px;">
+          Attach files with <span class="mono">@</span>, upload from disk, then confirm when ready.
+        </p>
+
+        <div class="split-layout">
+          <!-- Chat panel -->
+          <div class="chat-panel">
+            <div class="chat-thread" id="chat-thread">
+              <div x-show="chatMessages.length === 0" class="loading-overlay">
+                <div class="spinner"></div>
+                <span>Initialising Gatherer agent…</span>
+              </div>
+              <template x-for="(msg, i) in chatMessages" :key="i">
+                <div class="bubble" :class="msg.role === 'user' ? 'user' : 'agent'"
+                  x-html="renderMessage(msg.content)">
+                </div>
+              </template>
+            </div>
+
+            <div class="chat-composer">
+              <textarea class="input chat-input" x-model="chatInput"
+                placeholder="Reply to the Gatherer…  (@ for files)"
+                @keydown.enter.exact.prevent="sendChat()"
+                @keydown.shift.enter="chatInput += '\n'"
+                @input="onChatInput($event)"></textarea>
+
+              <!-- @ file picker dropdown -->
+              <div x-show="atDropdown.show" style="position:relative;">
+                <div class="repo-dropdown" style="position:absolute;bottom:0;left:0;right:0;z-index:50;">
+                  <template x-for="f in atDropdown.files" :key="f">
+                    <div class="repo-dropdown-item" @click="insertFileRef(f)" x-text="f"></div>
+                  </template>
+                </div>
+              </div>
+
+              <div class="composer-row">
+                <button class="btn sm ghost" title="Attach file">📎 attach</button>
+                <button class="btn sm ghost" @click="atDropdown.show = !atDropdown.show">@ file picker</button>
+                <span class="grow"></span>
+                <button class="btn sm" @click="sendChat()">Send</button>
+              </div>
+              <div class="composer-row confirm-row">
+                <button class="btn primary" @click="confirmContext()" :disabled="contextLocked">
+                  ✓ Context complete — start planning
+                </button>
+                <button class="btn ghost sm" @click="reopenContext()"
+                  :disabled="contextLocked"
+                  :title="contextLocked ? 'Context is locked — work is in progress' : ''"
+                  style="opacity:0.6;">
+                  ↺ Reopen context gathering
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Context editor -->
+          <div class="ctx-panel">
+            <div class="ctx-panel-head">
+              <span>context.md <span class="live-badge">● live</span></span>
+              <div class="row" style="gap:6px;">
+                <button class="btn sm ghost" @click="ctxEditorVisible = !ctxEditorVisible"
+                  x-text="ctxEditorVisible ? '⇱ hide' : '⇲ show'"></button>
+                <button class="btn sm" @click="saveContext()" :disabled="contextLocked">save</button>
+              </div>
+            </div>
+            <textarea class="input ctx-editor-body" x-show="ctxEditorVisible"
+              x-model="contextContent"
+              :readonly="contextLocked"
+              :placeholder="contextLocked ? 'Context is locked — work is in progress.' : 'Manual edits here are reflected in the next plan.'">
+            </textarea>
+            <div class="ctx-panel-foot" x-show="ctxEditorVisible">
+              <span x-text="contextLocked ? 'Context is locked — work is in progress.' : 'Manual edits here flow into the next plan.'"></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================================
+           PAGE: PLAN
+           ======================================================== -->
+      <div x-show="currentPage === 'plan'" class="view-page" id="page-plan">
+        <!-- Replanning overlay -->
+        <div x-show="replanning" class="loading-overlay" style="padding:40px;">
+          <div class="spinner"></div>
+          <span>Planner agent is working…</span>
+        </div>
+
+        <!-- No state yet -->
+        <div x-show="!replanning && !hasState()" class="loading-overlay">
+          <div class="spinner"></div>
+          <span>Waiting for planner…</span>
+        </div>
+
+        <template x-if="!replanning && hasState()">
+          <div>
+            <div class="plan-header">
+              <div>
+                <h2 x-text="'Plan — ' + (activeSession || '')"></h2>
+                <div class="meta" x-text="planMeta()"></div>
+              </div>
+              <div class="row" style="gap:8px;">
+                <button class="btn ghost sm" @click="toggleAllWuCards()">↓ expand all</button>
+                <button class="btn sm" @click="replanOpen = !replanOpen">↻ Re-plan</button>
+              </div>
+            </div>
+
+            <!-- Re-plan input -->
+            <div class="replan-input-area" x-show="replanOpen">
+              <textarea class="input grow" x-model="replanInstructions"
+                placeholder="Describe what should change in the plan…"
+                style="min-height:60px;"></textarea>
+              <button class="btn primary" @click="submitReplan()">Re-plan</button>
+              <button class="btn ghost" @click="replanOpen = false">Cancel</button>
+            </div>
+
+            <div class="plan-layout">
+              <!-- Sticky outline -->
+              <aside class="outline-sidebar">
+                <h3>outline</h3>
+                <template x-for="wu in sortedWUs()" :key="wu.id">
+                  <div class="outline-item" :class="activeWuId === wu.id ? 'active' : ''"
+                    @click="scrollToWU(wu.id)">
+                    <span class="status-dot" :class="wu.status"></span>
+                    <span class="wu-id-label" x-text="wu.id"></span>
+                    <span style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" x-text="shortTitle(wu.title)"></span>
+                  </div>
+                </template>
+              </aside>
+
+              <!-- WU cards -->
+              <div>
+                <template x-for="wu in sortedWUs()" :key="wu.id">
+                  <div class="wu-card" :id="'wu-' + wu.id">
+                    <div class="wu-card-head">
+                      <div>
+                        <span class="wu-id" x-text="wu.id"></span>
+                        <span class="wu-title" x-text="wu.title"></span>
+                      </div>
+                      <div class="actions">
+                        <span class="pill" :class="statusClass(wu.status)" x-text="statusLabel(wu.status)"></span>
+
+                        <!-- completed actions -->
+                        <template x-if="wu.status === 'completed'">
+                          <button class="btn sm ghost" @click="openDiff(wu)">View diff ↗</button>
+                        </template>
+
+                        <!-- failed actions -->
+                        <template x-if="wu.status === 'failed'">
+                          <button class="btn sm ghost" @click="resetWU(wu.id)">↺ Reset</button>
+                        </template>
+                        <template x-if="wu.status === 'failed'">
+                          <button class="btn sm" @click="openReshapeModal(wu)">Trigger reshape</button>
+                        </template>
+
+                        <!-- blocked actions -->
+                        <template x-if="wu.status === 'blocked'">
+                          <button class="btn sm ghost" @click="resetWU(wu.id)">↺ Reset</button>
+                        </template>
+
+                        <!-- kebab -->
+                        <template x-if="wu.status !== 'in_progress'">
+                          <button class="btn sm ghost" @click="toggleWuCard(wu.id)">⋯</button>
+                        </template>
+                        <template x-if="wu.status === 'in_progress'">
+                          <span class="mono text-muted" style="font-size:11px;">in flight</span>
+                        </template>
+                      </div>
+                    </div>
+
+                    <!-- Failed banner -->
+                    <div class="wu-failed-banner" x-show="wu.status === 'failed' && wu.failure_count >= 2">
+                      ⚠ failure_count = <span x-text="wu.failure_count"></span> · pivot may be needed.
+                    </div>
+
+                    <div x-show="expandedWUs[wu.id] !== false">
+                      <div class="kv" x-text="wu.description"></div>
+
+                      <template x-if="wu.acceptance_criteria && wu.acceptance_criteria.length">
+                        <div>
+                          <div class="kv"><b>Acceptance Criteria</b></div>
+                          <ul class="ac-list">
+                            <template x-for="(ac, idx) in wu.acceptance_criteria" :key="idx">
+                              <li>
+                                <span class="ac-check" :class="wu.status === 'completed' ? 'done' : ''">
+                                  <span x-show="wu.status === 'completed'">✓</span>
+                                </span>
+                                <span x-text="ac"></span>
+                              </li>
+                            </template>
+                          </ul>
+                        </div>
+                      </template>
+
+                      <template x-if="wu.solution_domain && wu.solution_domain.length">
+                        <div class="kv">
+                          <b>Solution domain</b>
+                          <span class="mono-val" x-text="wu.solution_domain.join(' · ')"></span>
+                        </div>
+                      </template>
+
+                      <div class="kv">
+                        <template x-if="wu.dependencies && wu.dependencies.length">
+                          <span><b>Dependencies</b> <span x-text="wu.dependencies.join(', ')"></span> &nbsp;·&nbsp; </span>
+                        </template>
+                        <template x-if="!wu.dependencies || !wu.dependencies.length">
+                          <span><b>Dependencies</b> none &nbsp;·&nbsp; </span>
+                        </template>
+                        <b>Batch</b> <span x-text="state.batch_number || '—'"></span>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- ========================================================
+           PAGE: DAG
+           ======================================================== -->
+      <div x-show="currentPage === 'dag'" id="page-dag" class="view-page full-width">
+        <div class="dag-toolbar">
+          <div class="left">
+            <h2 style="font-size:17px;font-weight:700;">Dependency graph</h2>
+            <button class="btn sm" @click="dagFit()">⤢ fit</button>
+            <select class="input" style="width:auto;padding:4px 8px;font-size:12px;" x-model="dagFilter"
+              @change="applyDagFilter()">
+              <option value="all">▾ show all</option>
+              <option value="in_progress">in progress only</option>
+              <option value="failed_blocked">failed + blocked</option>
+            </select>
+          </div>
+          <div class="right">
+            <div class="dag-legend">
+              <span><span class="status-dot pending"></span> pending</span>
+              <span><span class="status-dot in_progress"></span> in progress</span>
+              <span><span class="status-dot completed"></span> completed</span>
+              <span><span class="status-dot failed"></span> failed</span>
+              <span><span class="status-dot blocked"></span> blocked</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="dag-canvas">
+          <div class="dag-empty" x-show="!hasState()">
+            <span style="font-size:32px;">◇</span>
+            <span>The plan has not been generated yet.</span>
+            <button class="btn sm" @click="navigate('context')">Go to Context Gathering →</button>
+          </div>
+          <svg id="dag-svg" x-show="hasState()"></svg>
+
+          <!-- Node popover -->
+          <div class="dag-popover" x-show="popover.show"
+            :style="`top:${popover.y}px;left:${popover.x}px`"
+            @click.stop>
+            <div class="row between" style="margin-bottom:4px;">
+              <h4 x-text="popoverWU ? popoverWU.id + ' · ' + popoverWU.title : ''"></h4>
+              <button class="close-btn" @click="popover.show = false">×</button>
+            </div>
+            <div class="popover-meta">
+              <span class="pill" :class="statusClass(popoverWU?.status)" x-text="statusLabel(popoverWU?.status)"></span>
+            </div>
+            <template x-if="popoverWU">
+              <div>
+                <div class="sec">
+                  <div class="sec-label">Description</div>
+                  <div class="sec-val" x-text="popoverWU.description || '—'"></div>
+                </div>
+                <template x-if="popoverWU.solution_domain && popoverWU.solution_domain.length">
+                  <div class="sec">
+                    <div class="sec-label">Solution domain</div>
+                    <div class="sec-val mono" x-text="popoverWU.solution_domain.join('\n')"></div>
+                  </div>
+                </template>
+                <template x-if="popoverWU.acceptance_criteria && popoverWU.acceptance_criteria.length">
+                  <div class="sec">
+                    <div class="sec-label">Acceptance criteria</div>
+                    <ul class="ac-list" style="margin-top:4px;">
+                      <template x-for="(ac, i) in popoverWU.acceptance_criteria" :key="i">
+                        <li>
+                          <span class="ac-check" :class="popoverWU.status === 'completed' ? 'done' : ''">
+                            <span x-show="popoverWU.status === 'completed'">✓</span>
+                          </span>
+                          <span style="font-size:12px;" x-text="ac"></span>
+                        </li>
+                      </template>
+                    </ul>
+                  </div>
+                </template>
+                <div class="popover-actions">
+                  <button class="btn sm ghost" @click="navigate('agents')">view agent output ↗</button>
+                  <button class="btn sm ghost" @click="openDiff(popoverWU)"
+                    :disabled="popoverWU.status !== 'completed'">view diff ↗</button>
+                </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========================================================
+           PAGE: AGENTS
+           ======================================================== -->
+      <div x-show="currentPage === 'agents'" class="view-page" id="page-agents">
+        <div class="agents-header">
+          <h2>Agent output</h2>
+          <span class="sub" x-text="agentsSub()"></span>
+        </div>
+
+        <!-- Empty state -->
+        <div class="agents-empty" x-show="completedWUs().length === 0 && !hasState()">
+          Agent output will appear here as work units complete.
+        </div>
+        <div class="agents-empty" x-show="completedWUs().length === 0 && hasState()">
+          No work units have completed yet.
+        </div>
+
+        <template x-for="wu in agentFeedWUs()" :key="wu.id">
+          <div class="agent-accordion">
+            <div class="agent-acc-head" @click="toggleAgentAcc(wu.id)">
+              <span class="chev" :class="agentAccOpen[wu.id] ? 'open' : ''" style="font-size:12px;">▶</span>
+              <span class="wu-id" x-text="wu.id"></span>
+              <span class="wu-title" x-text="wu.title"></span>
+              <span class="pill" :class="statusClass(wu.status)" x-text="statusLabel(wu.status) + (wu.failure_count > 1 ? ' · round ' + wu.failure_count : '')"></span>
+              <template x-if="wu.status === 'completed'">
+                <button class="btn sm ghost" @click.stop="openDiff(wu)">View diff ↗</button>
+              </template>
+              <span class="time text-muted" x-text="wuTimestamp(wu)"></span>
+            </div>
+
+            <div class="agent-acc-body" :class="agentAccOpen[wu.id] ? 'open' : ''">
+              <template x-if="wu.implementer_report || wu.last_review">
+                <div>
+                  <!-- Single round or multiple -->
+                  <div class="round-label" x-show="(wu.failure_count || 0) > 1">Round <span x-text="wu.failure_count || 1"></span></div>
+
+                  <template x-if="wu.implementer_report">
+                    <div class="imp-section">
+                      <h5>Implementer <span class="meta" x-text="'claude-sonnet'"></span></h5>
+                      <div style="font-size:13px;color:var(--text-2);margin-bottom:10px;" x-text="wu.implementer_report.summary || '—'"></div>
+                      <template x-if="wu.implementer_report.files_touched && wu.implementer_report.files_touched.length">
+                        <div>
+                          <div class="kv" style="margin-bottom:4px;"><b>Files changed</b></div>
+                          <div class="files-list">
+                            <template x-for="f in wu.implementer_report.files_touched" :key="f">
+                              <div><a href="#" @click.prevent="openDiff(wu, f)" x-text="f"></a></div>
+                            </template>
+                          </div>
+                        </div>
+                      </template>
+                      <template x-if="wu.implementer_report.domain_breaches && wu.implementer_report.domain_breaches.length">
+                        <div class="domain-breach">
+                          ⚠ <b>Domain breach:</b> touched files outside solution_domain:<br>
+                          <div class="mono" style="margin-top:4px;" x-text="wu.implementer_report.domain_breaches.join(', ')"></div>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+
+                  <template x-if="wu.last_review">
+                    <div class="rev-section">
+                      <h5>
+                        Reviewer
+                        <span class="pill" :class="wu.last_review.verdict === 'pass' ? 'pass' : (wu.last_review.verdict === 'fail' ? 'fail' : 'reshape')"
+                          x-text="wu.last_review.verdict || '—'"></span>
+                      </h5>
+                      <div style="font-size:13px;color:var(--text-2);margin-bottom:10px;" x-text="wu.last_review.summary || '—'"></div>
+
+                      <template x-if="wu.last_review.ac_coverage && wu.last_review.ac_coverage.length">
+                        <table class="ac-table">
+                          <thead><tr><th>AC</th><th>Covered</th><th>Notes</th></tr></thead>
+                          <tbody>
+                            <template x-for="(row, i) in wu.last_review.ac_coverage" :key="i">
+                              <tr>
+                                <td x-text="row.criterion || row.ac || ''"></td>
+                                <td x-text="row.covered ? '✓' : '○'"></td>
+                                <td x-text="row.notes || '—'"></td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <template x-if="!wu.implementer_report && !wu.last_review">
+                <div class="text-muted" style="font-size:13px;padding:10px 0;">No agent output recorded yet.</div>
+              </template>
+
+              <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
+                <button class="btn sm ghost" @click="openDiff(wu)" x-show="wu.status === 'completed'">
+                  View merged diff ↗
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+    </main><!-- /main-view -->
+  </div><!-- /content-area -->
+
+  <!-- ================================================================
+       MODAL: DIFF VIEWER  (Modal A)
+       ================================================================ -->
+  <div class="modal-overlay" :class="diffModal.open ? '' : 'hidden'" @click.self="diffModal.open = false">
+    <div class="modal-box">
+      <div class="modal-head">
+        <div>
+          <div class="title" x-text="'Diff — ' + (diffModal.wu ? diffModal.wu.id + ': ' + diffModal.wu.title : '')"></div>
+          <div class="subtitle" x-text="diffModal.commitMeta"></div>
+        </div>
+        <button class="btn sm ghost" @click="diffModal.open = false">× close</button>
+      </div>
+
+      <!-- File tabs -->
+      <div class="diff-tabs">
+        <template x-for="(file, i) in diffModal.files" :key="i">
+          <button class="diff-tab" :class="diffModal.activeFile === i ? 'active' : ''"
+            @click="diffModal.activeFile = i">
+            <span x-text="file.path"></span>
+            <span class="add-badge" x-show="file.additions" x-text="'+' + file.additions"></span>
+            <span class="del-badge" x-show="file.deletions" x-text="'−' + file.deletions"></span>
+          </button>
+        </template>
+        <template x-if="diffModal.files.length === 0">
+          <span class="text-muted" style="font-size:12px;padding:4px 8px;">No diff available</span>
+        </template>
+      </div>
+
+      <!-- Diff panel -->
+      <div class="modal-body">
+        <template x-if="diffModal.files.length > 0 && diffModal.files[diffModal.activeFile]">
+          <div class="diff-panel">
+            <div class="diff-col">
+              <div class="diff-col-head">before — <span x-text="diffModal.files[diffModal.activeFile]?.path"></span></div>
+              <template x-for="(line, i) in diffModal.files[diffModal.activeFile]?.beforeLines || []" :key="i">
+                <div class="diff-line" :class="line.type">
+                  <span class="ln" x-text="line.ln || ''"></span>
+                  <span class="mono" x-text="line.text"></span>
+                </div>
+              </template>
+            </div>
+            <div class="diff-col">
+              <div class="diff-col-head">after</div>
+              <template x-for="(line, i) in diffModal.files[diffModal.activeFile]?.afterLines || []" :key="i">
+                <div class="diff-line" :class="line.type">
+                  <span class="ln" x-text="line.ln || ''"></span>
+                  <span class="mono" x-text="line.text"></span>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="diffModal.files.length === 0">
+          <div class="agents-empty">No diff data available for this work unit.</div>
+        </template>
+      </div>
+
+      <div class="modal-foot">
+        <span x-text="diffModal.totals"></span>
+        <span class="mono">side-by-side · narrow screens fall back to unified</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================================================================
+       MODAL: RESHAPE / PIVOT  (Modal B)
+       ================================================================ -->
+  <div class="modal-overlay" :class="reshapeModal.open ? '' : 'hidden'" @click.self="reshapeModal.open = false">
+    <div class="modal-box sm">
+      <div class="modal-head">
+        <div>
+          <div class="title">Reshape or Pivot</div>
+          <div class="subtitle" x-text="'triggered on: ' + (reshapeModal.wu ? reshapeModal.wu.id + ' · ' + reshapeModal.wu.title : 'deadlock')"></div>
+        </div>
+        <button class="btn sm ghost" @click="reshapeModal.open = false" x-show="!reshapeModal.deadlock">× close</button>
+      </div>
+
+      <div class="modal-body" style="padding:16px;">
+        <!-- Deadlock banner -->
+        <div class="deadlock-banner" x-show="reshapeModal.deadlock">
+          No work units are currently ready to execute. This may be caused by cascading failures. Review the options below.
+        </div>
+
+        <!-- Manual trigger context -->
+        <div class="card" style="background:rgba(224,82,82,0.08);border-color:rgba(224,82,82,0.3);padding:10px 12px;margin-bottom:14px;" x-show="!reshapeModal.deadlock && reshapeModal.wu">
+          <div style="font-size:13px;color:var(--red);">
+            <b x-text="reshapeModal.wu ? reshapeModal.wu.id + ' (' + reshapeModal.wu.title + ')' : ''"></b>
+            has failed after <span x-text="reshapeModal.wu?.failure_count || 2"></span> review cycles. Choose how to proceed.
+          </div>
+        </div>
+
+        <!-- Option 1: Reset -->
+        <div class="opt-section">
+          <h5>① Reset WU to pending</h5>
+          <p>Resets failure_count to 0 and returns status → pending. Downstream blocked WUs will be unblocked.</p>
+          <div class="unblock-preview" x-show="reshapeModal.unblocks && reshapeModal.unblocks.length">
+            ▸ will unblock: <span x-text="(reshapeModal.unblocks || []).join(', ')"></span>
+          </div>
+          <button class="btn" @click="doReshapeReset()">Reset and continue</button>
+        </div>
+
+        <!-- Option 2: Reshape -->
+        <div class="opt-section">
+          <h5>② Reshape plan</h5>
+          <p>Re-run planner with current context.md + plan.md + your instructions. Completed WUs are preserved; others may be redefined.</p>
+          <textarea class="input" x-model="reshapeModal.instructions"
+            placeholder="Describe the changes you'd like the planner to make…"
+            style="min-height:72px;margin-bottom:10px;"></textarea>
+          <div class="row" style="gap:10px;align-items:center;">
+            <button class="btn primary" @click="doReshapePlan()">Reshape</button>
+            <span class="mono text-muted">planner receives: context.md + plan.md + this text</span>
+          </div>
+        </div>
+
+        <!-- Option 3: Abort -->
+        <div class="opt-section danger">
+          <h5>③ Abort session</h5>
+          <p>Destructive — marks the session abandoned. The tab stays visible but greyed out.</p>
+          <template x-if="!reshapeModal.abortConfirm">
+            <button class="btn danger" @click="reshapeModal.abortConfirm = true">Abort session</button>
+          </template>
+          <template x-if="reshapeModal.abortConfirm">
+            <div class="row between">
+              <span class="text-danger" style="font-size:12px;">"Are you sure? This cannot be undone."</span>
+              <button class="btn danger primary" @click="doAbortSession()">Confirm abort</button>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <div class="modal-foot">
+        <span x-text="reshapeModal.deadlock ? 'Deadlock — you must choose an action.' : 'Esc or × to dismiss'"></span>
+        <span class="mono text-muted" x-show="reshapeModal.deadlock">auto-raised on deadlock</span>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /#app -->
+
+<!-- Libraries -->
+<script src="https://unpkg.com/alpinejs@3/dist/cdn.min.js" defer></script>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="/static/dag.js"></script>
+
+<script>
+/* ===========================================================
+   Alpine.js application
+   =========================================================== */
+document.addEventListener('alpine:init', () => {
+  Alpine.data('app', () => ({
+
+    // ---- State ----
+    wsStatus: 'disconnected',
+    sidebarCollapsed: false,
+    currentPage: 'landing',
+    activeSession: null,
+    sessions: [],    // slugs shown as tabs
+    state: {},       // current state.json content
+
+    // Landing
+    landing: {
+      repoInput: '',
+      repoSuggestions: [],
+      resumeOn: false,
+      selectedSlug: '',
+      existingSlugs: [],
+      dangerOpen: false,
+      resetFailed: false,
+      reshapeOn: false,
+      reshapeInstructions: '',
+    },
+    showRepoDrop: false,
+
+    // Context gathering
+    chatMessages: [],
+    chatInput: '',
+    ctxEditorVisible: true,
+    contextContent: '',
+    contextLocked: false,
+    atDropdown: { show: false, files: [] },
+
+    // Plan
+    expandedWUs: {},
+    activeWuId: null,
+    replanOpen: false,
+    replanInstructions: '',
+    replanning: false,
+
+    // DAG
+    dagFilter: 'all',
+    popover: { show: false, x: 0, y: 0 },
+    popoverWU: null,
+
+    // Agents
+    agentAccOpen: {},
+
+    // Diff modal
+    diffModal: {
+      open: false,
+      wu: null,
+      files: [],
+      activeFile: 0,
+      commitMeta: '',
+      totals: '',
+    },
+
+    // Reshape modal
+    reshapeModal: {
+      open: false,
+      wu: null,
+      deadlock: false,
+      unblocks: [],
+      instructions: '',
+      abortConfirm: false,
+    },
+
+    // ---- Init ----
+    async init() {
+      this.loadSessionsFromStorage();
+      this.connectWS();
+
+      // DAG popover
+      document.addEventListener('wu-select', (e) => this.onDagNodeClick(e.detail.wu_id));
+      document.addEventListener('dag-canvas-click', () => { this.popover.show = false; });
+
+      // Keyboard: Escape to close modals
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          this.diffModal.open = false;
+          if (!this.reshapeModal.deadlock) this.reshapeModal.open = false;
+        }
+      });
+
+      // Fetch existing sessions from server
+      await this.fetchSessions();
+
+      // If we have sessions, switch to the first one
+      if (this.sessions.length > 0 && !this.activeSession) {
+        await this.switchSession(this.sessions[0]);
+      }
+    },
+
+    // ---- WebSocket ----
+    connectWS() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      const ws = new WebSocket(`${proto}://${location.host}/ws/state`);
+      this._ws = ws;
+
+      ws.onopen = () => {
+        this.wsStatus = 'connected';
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const newState = JSON.parse(ev.data);
+          this.onStateUpdate(newState);
+        } catch {}
+      };
+      ws.onclose = () => {
+        this.wsStatus = 'reconnecting';
+        setTimeout(() => this.connectWS(), 2500);
+      };
+      ws.onerror = () => {
+        this.wsStatus = 'disconnected';
+      };
+    },
+
+    onStateUpdate(newState) {
+      this.state = newState;
+      this.wsStatus = 'connected';
+
+      // Re-render DAG if on DAG page
+      if (this.currentPage === 'dag') {
+        this.$nextTick(() => this.renderDag());
+      }
+
+      // Check for deadlock
+      const wus = newState.work_units || {};
+      const statuses = Object.values(wus).map(w => w.status);
+      const hasDeadlock = statuses.length > 0
+        && !statuses.includes('in_progress')
+        && !statuses.every(s => ['completed', 'failed', 'blocked'].includes(s))
+        && !statuses.every(s => s === 'completed')
+        && Object.values(wus).some(w => w.get && w.get('needs_user_pivot'));
+
+      // Auto-open reshape on deadlock
+      const pivotWUs = Object.entries(wus).filter(([, w]) => w.needs_user_pivot);
+      if (pivotWUs.length && !this.reshapeModal.open) {
+        const [wid, wu] = pivotWUs[0];
+        this.reshapeModal.wu = { id: wid, ...wu };
+        this.reshapeModal.unblocks = this.getDownstreamBlocked(wid);
+        this.reshapeModal.deadlock = false;
+        this.reshapeModal.abortConfirm = false;
+        this.reshapeModal.open = true;
+      }
+
+      // Update context lock
+      const anyNotPending = Object.values(wus).some(w => w.status !== 'pending');
+      this.contextLocked = anyNotPending;
+    },
+
+    // ---- Session management ----
+    loadSessionsFromStorage() {
+      try {
+        const saved = JSON.parse(localStorage.getItem('overture_sessions') || '[]');
+        if (Array.isArray(saved)) this.sessions = saved;
+      } catch {}
+    },
+    saveSessionsToStorage() {
+      try { localStorage.setItem('overture_sessions', JSON.stringify(this.sessions)); } catch {}
+    },
+
+    async fetchSessions() {
+      try {
+        const r = await fetch('/api/sessions');
+        const data = await r.json();
+        const serverSlugs = data.sessions || [];
+        // Add server sessions not already in our list
+        for (const s of serverSlugs) {
+          if (!this.sessions.includes(s)) this.sessions.push(s);
+        }
+        this.landing.existingSlugs = serverSlugs;
+        this.saveSessionsToStorage();
+      } catch {}
+    },
+
+    async switchSession(slug) {
+      this.activeSession = slug;
+      if (!this.sessions.includes(slug)) {
+        this.sessions.push(slug);
+        this.saveSessionsToStorage();
+      }
+      // Load state
+      try {
+        const r = await fetch('/api/state');
+        this.state = await r.json();
+      } catch {}
+      // Load context
+      try {
+        const r = await fetch('/api/context');
+        const data = await r.json();
+        this.contextContent = data.content || '';
+      } catch {}
+
+      if (this.hasState()) {
+        this.navigate('plan');
+      } else {
+        this.navigate('context');
+      }
+    },
+
+    closeSession(slug) {
+      this.sessions = this.sessions.filter(s => s !== slug);
+      this.saveSessionsToStorage();
+      if (this.activeSession === slug) {
+        this.activeSession = this.sessions[0] || null;
+        if (this.activeSession) {
+          this.switchSession(this.activeSession);
+        } else {
+          this.openLanding();
+        }
+      }
+    },
+
+    openLanding() {
+      this.currentPage = 'landing';
+    },
+
+    // ---- Navigation ----
+    navigate(page) {
+      this.currentPage = page;
+      if (page === 'dag') {
+        this.$nextTick(() => this.renderDag());
+      }
+    },
+
+    // ---- Landing actions ----
+    filterRepos() {
+      const q = this.landing.repoInput.toLowerCase();
+      if (!q) { this.showRepoDrop = false; return; }
+      // In production this would query the server; here we just filter known slugs
+      this.landing.repoSuggestions = this.landing.existingSlugs
+        .filter(s => s.toLowerCase().includes(q))
+        .slice(0, 8);
+      this.showRepoDrop = this.landing.repoSuggestions.length > 0;
+    },
+    selectRepo(repo) {
+      this.landing.repoInput = repo;
+      this.showRepoDrop = false;
+    },
+
+    async startNewSession() {
+      // Navigate to context page with empty state — the backend starts the session
+      const slug = 'new-session-' + Date.now();
+      this.activeSession = slug;
+      this.sessions.push(slug);
+      this.saveSessionsToStorage();
+      this.state = {};
+      this.chatMessages = [];
+      this.contextContent = '';
+      this.navigate('context');
+    },
+
+    async resumeSession() {
+      const slug = this.landing.selectedSlug;
+      if (!slug) return;
+      await this.switchSession(slug);
+    },
+
+    async abortSession() {
+      if (!confirm('Abort this session? This cannot be undone.')) return;
+      // POST abort to server
+      try {
+        await fetch(`/api/wu/abort/pivot`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'abort' }),
+        });
+      } catch {}
+    },
+
+    // ---- Context gathering ----
+    async sendChat() {
+      const msg = this.chatInput.trim();
+      if (!msg) return;
+      this.chatMessages.push({ role: 'user', content: msg });
+      this.chatInput = '';
+      this.$nextTick(() => {
+        const thread = document.getElementById('chat-thread');
+        if (thread) thread.scrollTop = thread.scrollHeight;
+      });
+      // In a real implementation this would stream to the gatherer agent
+    },
+
+    onChatInput(e) {
+      const val = this.chatInput;
+      const atIdx = val.lastIndexOf('@');
+      if (atIdx >= 0 && atIdx === val.length - 1) {
+        this.atDropdown.files = ['src/', 'tests/', 'README.md'];
+        this.atDropdown.show = true;
+      } else if (atIdx >= 0) {
+        const term = val.slice(atIdx + 1).toLowerCase();
+        this.atDropdown.files = ['src/', 'tests/', 'README.md'].filter(f => f.toLowerCase().includes(term));
+        this.atDropdown.show = this.atDropdown.files.length > 0;
+      } else {
+        this.atDropdown.show = false;
+      }
+    },
+
+    insertFileRef(f) {
+      const atIdx = this.chatInput.lastIndexOf('@');
+      this.chatInput = this.chatInput.slice(0, atIdx) + '@' + f;
+      this.atDropdown.show = false;
+    },
+
+    renderMessage(content) {
+      // Minimal markdown: code spans
+      return (content || '').replace(/`([^`]+)`/g, '<span class="chip">$1</span>');
+    },
+
+    async confirmContext() {
+      if (this.contextLocked) return;
+      // Signal context complete — in real impl this triggers planner
+      this.chatMessages.push({ role: 'agent', content: 'Context confirmed. Starting planner…' });
+      this.navigate('plan');
+    },
+
+    async reopenContext() {
+      if (this.contextLocked) return;
+      this.chatMessages.push({ role: 'agent', content: 'Context gathering reopened.' });
+    },
+
+    async saveContext() {
+      if (this.contextLocked) return;
+      try {
+        await fetch('/api/context', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: this.contextContent }),
+        });
+      } catch {}
+    },
+
+    // ---- Plan ----
+    hasState() {
+      return this.state && this.state.work_units && Object.keys(this.state.work_units).length > 0;
+    },
+
+    sortedWUs() {
+      const wus = this.state.work_units || {};
+      return Object.entries(wus)
+        .map(([id, w]) => ({ id, ...w }))
+        .sort((a, b) => a.id.localeCompare(b.id));
+    },
+
+    planMeta() {
+      const wus = this.sortedWUs();
+      const inFlight = wus.filter(w => w.status === 'in_progress').length;
+      return `${wus.length} work units · batch #${this.state.batch_number || 1} · ${inFlight} in flight`;
+    },
+
+    toggleWuCard(id) {
+      this.expandedWUs[id] = this.expandedWUs[id] === false ? true : false;
+    },
+
+    toggleAllWuCards() {
+      const allOpen = this.sortedWUs().every(w => this.expandedWUs[w.id] !== false);
+      this.sortedWUs().forEach(w => { this.expandedWUs[w.id] = !allOpen; });
+    },
+
+    scrollToWU(id) {
+      this.activeWuId = id;
+      this.navigate('plan');
+      this.$nextTick(() => {
+        const el = document.getElementById('wu-' + id);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    },
+
+    shortTitle(title) {
+      if (!title) return '';
+      return title.length > 20 ? title.slice(0, 19) + '…' : title;
+    },
+
+    async resetWU(wuId) {
+      try {
+        const r = await fetch(`/api/wu/${wuId}/reset`, { method: 'POST' });
+        const data = await r.json();
+        if (data.ok) {
+          const state = await (await fetch('/api/state')).json();
+          this.state = state;
+        }
+      } catch {}
+    },
+
+    async submitReplan() {
+      const instructions = this.replanInstructions.trim();
+      if (!instructions) return;
+      this.replanning = true;
+      this.replanOpen = false;
+      // In production this would POST to a replan endpoint and stream results
+      setTimeout(() => { this.replanning = false; }, 2000);
+    },
+
+    // ---- DAG ----
+    renderDag() {
+      const svgEl = document.getElementById('dag-svg');
+      if (!svgEl || !this.hasState()) return;
+      let wus = this.state.work_units || {};
+
+      if (this.dagFilter === 'in_progress') {
+        wus = Object.fromEntries(Object.entries(wus).filter(([, w]) => w.status === 'in_progress'));
+      } else if (this.dagFilter === 'failed_blocked') {
+        wus = Object.fromEntries(Object.entries(wus).filter(([, w]) => ['failed', 'blocked'].includes(w.status)));
+      }
+
+      OvertureDAG.renderDAG(svgEl, wus);
+    },
+
+    applyDagFilter() {
+      this.$nextTick(() => this.renderDag());
+    },
+
+    dagFit() {
+      const svgEl = document.getElementById('dag-svg');
+      OvertureDAG.fitToScreen(svgEl);
+    },
+
+    onDagNodeClick(wuId) {
+      const wus = this.state.work_units || {};
+      const wu = wus[wuId];
+      if (!wu) return;
+      this.popoverWU = { id: wuId, ...wu };
+
+      // Position popover near click or at default spot
+      const svgEl = document.getElementById('dag-svg');
+      const rect = svgEl?.getBoundingClientRect();
+      const dagCanvas = document.querySelector('.dag-canvas');
+      const canvasRect = dagCanvas?.getBoundingClientRect();
+      this.popover.x = Math.min((canvasRect?.width || 900) - 320, (rect?.width || 900) * 0.6);
+      this.popover.y = 100;
+      this.popover.show = true;
+    },
+
+    // ---- Agents ----
+    agentFeedWUs() {
+      return this.sortedWUs().filter(w =>
+        ['completed', 'failed'].includes(w.status) || w.implementer_report || w.last_review
+      ).reverse();
+    },
+
+    completedWUs() {
+      return this.sortedWUs().filter(w => w.status === 'completed');
+    },
+
+    agentsSub() {
+      const all = this.sortedWUs();
+      const done = all.filter(w => w.status === 'completed').length;
+      return `${done} of ${all.length} WUs complete`;
+    },
+
+    toggleAgentAcc(id) {
+      this.agentAccOpen[id] = !this.agentAccOpen[id];
+    },
+
+    wuTimestamp(wu) {
+      // Would come from wu.completed_at in real impl
+      return wu.completed_at ? new Date(wu.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    },
+
+    // ---- Status helpers ----
+    statusClass(status) {
+      const map = {
+        pending: 'pending',
+        in_progress: 'in_progress',
+        completed: 'completed',
+        failed: 'failed',
+        blocked: 'blocked',
+      };
+      return map[status] || 'pending';
+    },
+
+    statusLabel(status) {
+      const map = {
+        pending: 'pending',
+        in_progress: 'in progress',
+        completed: 'completed',
+        failed: 'failed',
+        blocked: 'blocked',
+      };
+      return map[status] || status || '—';
+    },
+
+    // ---- Phase helpers ----
+    sessionPhase() {
+      if (!this.hasState()) return 'Gathering';
+      const wus = Object.values(this.state.work_units || {});
+      if (!wus.length) return 'Planning';
+      if (wus.every(w => w.status === 'completed')) return 'Done';
+      if (wus.some(w => w.status === 'in_progress')) return 'Executing';
+      if (wus.some(w => w.status === 'failed' || w.status === 'blocked')) return 'Needs Pivot';
+      return 'Executing';
+    },
+
+    phaseClass() {
+      const p = this.sessionPhase();
+      if (p === 'Done') return 'completed';
+      if (p === 'Executing') return 'in_progress';
+      if (p === 'Needs Pivot') return 'failed';
+      return 'pending';
+    },
+
+    phaseDotClass() {
+      return this.phaseClass();
+    },
+
+    // ---- Diff modal ----
+    openDiff(wu, focusFile) {
+      this.diffModal.wu = wu;
+      // Derive diff data from implementer_report if available
+      const report = wu.implementer_report || {};
+      const files = (report.files_touched || []).map(f => ({
+        path: f,
+        additions: null,
+        deletions: null,
+        beforeLines: [],
+        afterLines: [{ type: 'add', ln: 1, text: '/* diff output not yet available */' }],
+      }));
+      this.diffModal.files = files;
+      this.diffModal.activeFile = files.findIndex(f => f.path === focusFile) || 0;
+      this.diffModal.commitMeta = report.commit_message
+        ? `commit ${report.commit_message.slice(0, 8)} · ${wu.id}`
+        : `${wu.id} · no commit recorded`;
+      this.diffModal.totals = `${files.length} file(s) changed`;
+      this.diffModal.open = true;
+    },
+
+    // ---- Reshape modal ----
+    openReshapeModal(wu) {
+      this.reshapeModal.wu = wu;
+      this.reshapeModal.unblocks = this.getDownstreamBlocked(wu.id);
+      this.reshapeModal.deadlock = false;
+      this.reshapeModal.instructions = '';
+      this.reshapeModal.abortConfirm = false;
+      this.reshapeModal.open = true;
+    },
+
+    getDownstreamBlocked(wuId) {
+      const wus = this.state.work_units || {};
+      return Object.entries(wus)
+        .filter(([, w]) => w.status === 'blocked' && (w.dependencies || []).includes(wuId))
+        .map(([id]) => id);
+    },
+
+    async doReshapeReset() {
+      const wuId = this.reshapeModal.wu?.id;
+      if (wuId) await this.resetWU(wuId);
+      this.reshapeModal.open = false;
+    },
+
+    async doReshapePlan() {
+      const instructions = this.reshapeModal.instructions.trim();
+      if (!instructions) return;
+      this.reshapeModal.open = false;
+      this.replanning = true;
+      this.navigate('plan');
+      // In production this would POST to a replan endpoint
+      setTimeout(() => { this.replanning = false; }, 2000);
+    },
+
+    async doAbortSession() {
+      try {
+        const wuId = this.reshapeModal.wu?.id || 'session';
+        await fetch(`/api/wu/${wuId}/pivot`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'abort' }),
+        });
+      } catch {}
+      this.reshapeModal.open = false;
+    },
+
+  }));
+});
+</script>
+</body>
+</html>

@@ -47,6 +47,18 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="(with --resume) Reset all failed/in-progress WUs to pending before resuming",
     )
+    parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="Start the web dashboard at http://localhost:7337 alongside the normal execution loop",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=7337,
+        metavar="PORT",
+        help="Port for the web dashboard (default: 7337, requires --ui)",
+    )
     return parser.parse_args()
 
 
@@ -69,10 +81,12 @@ def main() -> None:
             args.resume,
             verbose=args.verbose,
             reset_failed=args.reset_failed,
+            ui=args.ui,
+            port=args.port,
         ))
     else:
         from .orchestrator import run
-        asyncio.run(run(target_repo, verbose=args.verbose))
+        asyncio.run(run(target_repo, verbose=args.verbose, ui=args.ui, port=args.port))
 
 
 async def _resume(
@@ -81,6 +95,8 @@ async def _resume(
     *,
     verbose: bool,
     reset_failed: bool = False,
+    ui: bool = False,
+    port: int = 7337,
 ) -> None:
     """Resume an existing session from the batch-execution phase."""
     from .batch_manager import run_batch
@@ -90,6 +106,11 @@ async def _resume(
     sm = SessionManager(target_repo)
     sm.load_session(session_slug)
     print(f"Resuming session: {session_slug}")
+
+    ui_task = None
+    if ui:
+        from .web_ui.server import start_ui_server
+        ui_task = asyncio.create_task(start_ui_server(sm, port=port))
 
     # If state.json is missing, try to recover without calling the planner again.
     state_path = sm.session_dir / "state.json"
@@ -145,6 +166,13 @@ async def _resume(
         summary = await run_batch(sm, target_repo, verbose=verbose)
         if summary["ready"] == 0:
             break
+
+    if ui_task:
+        ui_task.cancel()
+        try:
+            await ui_task
+        except asyncio.CancelledError:
+            pass
 
 
 if __name__ == "__main__":
