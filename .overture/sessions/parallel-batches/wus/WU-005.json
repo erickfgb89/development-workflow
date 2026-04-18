@@ -19,5 +19,23 @@
     "WU-003"
   ],
   "status": "pending",
-  "estimate_minutes": 25
+  "estimate_minutes": 25,
+  "failure_count": 0,
+  "worktree_branch": null,
+  "implementer_report": {
+    "wu_id": "WU-005",
+    "status": "success",
+    "summary": "Created tests/test_batch_integration.py with an async pytest-asyncio integration test. A git_repo fixture initialises a real git repo on main with an initial commit. A session_manager fixture builds state.json with 3 independent pending WUs (WU-101/102/103, non-overlapping solution_domains). run_query_json is patched at overture.batch_manager.run_query_json with an async stub that identifies the WU ID and agent role from the prompt text and returns schema-valid fake implementer/reviewer responses, so real worktree create/remove cycles run against the fixture repo while no network calls are made. Three assertions cover all ACs: (1) summary shows passed=3, failed=0, reshaped=0; (2) state.json post-batch has all 3 WU keys with status=completed and no clobbered id fields; (3) all three wu/* branches have been deleted by remove_worktree(). pyproject.toml was updated with pytest and pytest-asyncio>=0.24 as optional test dependencies and asyncio_mode='auto' under [tool.pytest.ini_options].",
+    "files_touched": [
+      "tests/test_batch_integration.py",
+      "pyproject.toml"
+    ],
+    "domain_breaches": [
+      {
+        "file": "pyproject.toml",
+        "justification": "pytest-asyncio must be declared as a test dependency and asyncio_mode='auto' must be configured in [tool.pytest.ini_options] for async tests to be collected and run without per-test @pytest.mark.asyncio decorators. Without these two additions the test cannot execute at all, making the change strictly unavoidable despite pyproject.toml being outside solution_domain."
+      }
+    ],
+    "commit_message": "test(WU-005): add 3-WU parallel batch integration test against temp git repo"
+  }
 }

@@ -48,6 +48,21 @@ class AgentHaltError(Exception):
         )
 
 
+class TurnLimitError(Exception):
+    """Raised when the SDK terminates a query because max_turns was reached.
+
+    The partial text collected before the cutoff is preserved in `partial_text`
+    so callers can inspect what the agent managed to do, save it for debugging,
+    and decide whether to continue in a new session.
+    """
+
+    def __init__(self, partial_text: str) -> None:
+        self.partial_text = partial_text
+        super().__init__(
+            f"Agent hit turn limit with {len(partial_text)} chars of partial output"
+        )
+
+
 def _check_for_agent_error(data: dict[str, Any]) -> None:
     """Raise AgentHaltError if *data* matches the AgentError envelope.
 
@@ -103,7 +118,12 @@ async def run_query(
     if result_msg is None:
         raise RuntimeError("SDK query ended without a ResultMessage")
     if result_msg.is_error:
-        raise RuntimeError(f"SDK query failed: {result_msg.result}")
+        # The SDK surfaces turn-limit termination as an error result.  We raise
+        # TurnLimitError (with whatever partial text was collected) so callers
+        # can handle the mid-flight state gracefully instead of treating it as
+        # a generic failure.
+        partial = "".join(text_parts)
+        raise TurnLimitError(partial)
 
     return "".join(text_parts), result_msg
 

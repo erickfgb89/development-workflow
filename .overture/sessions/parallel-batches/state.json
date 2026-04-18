@@ -135,10 +135,75 @@
       "dependencies": [
         "WU-002"
       ],
-      "status": "in_progress",
+      "status": "completed",
       "estimate_minutes": 20,
       "failure_count": 0,
-      "worktree_branch": null
+      "worktree_branch": null,
+      "last_review": {
+        "wu_id": "WU-003",
+        "verdict": "pass",
+        "summary": "White-Hat: All 7 ACs are satisfied. merge_lock and state_lock are created as asyncio.Lock() instances at lines 417\u2013418, before the TaskGroup. All WUs are launched inside a single `async with asyncio.TaskGroup() as tg:` block (line 430), each task receiving both locks via the _run_one closure that calls execute_wu(). The old sequential for-loop is gone \u2014 replaced by parallel task creation. Verdicts flow into the results dict after the TaskGroup closes (line 435+), and the summary dict preserves the {ready, passed, failed, reshaped} shape exactly. The needs_user_pivot flag is set inside execute_wu() as a state field and execute_wu() returns 'fail' (never raises), so no TaskGroup-level cancellation of siblings occurs. Black-Hat: (1) The results dict is written by coroutines without a lock, but asyncio's single-threaded cooperative model makes this safe \u2014 no actual data race. (2) batch_number is written to state before TaskGroup launch (line 413), outside state_lock, but this is safe since no tasks are running yet. (3) _run_reviewer() receives failure_count as a keyword argument but the _REVIEWER_PROMPT_TEMPLATE has no {failure_count} placeholder \u2014 the kwarg is silently ignored by str.format(); harmless but dead code. (4) The general except Exception in execute_wu() swallows all errors and returns 'fail', which prevents any TaskGroup sibling cancellation \u2014 this is correct and intentional per AC7. Domain: pyproject.toml (pytest-asyncio test dep), tests/__init__.py (package init), and tests/test_batch_manager.py are all touched. The WU explicitly required parallel execution with locks and the test infrastructure is mandatory to validate concurrency behaviour; these breaches are justified. The implementer's domain breach justification references 'AC8' which does not exist in this WU \u2014 the correct justification is that the WU description and ACs implicitly require tests to validate the TaskGroup pattern. This is a documentation inaccuracy in the report only, not a code defect.",
+        "file_feedback": [
+          {
+            "file": "src/overture/batch_manager.py",
+            "verdict": "approved",
+            "notes": "run_batch() is clean and correct. merge_lock and state_lock are scoped appropriately. The re-read-from-disk pattern inside state_lock is correctly applied at every write site in execute_wu(). The _run_one closure correctly captures wu_id to avoid loop-variable aliasing. The finally block guarantees worktree cleanup even on agent errors. Minor nit: failure_count is passed as a kwarg to _run_reviewer() but is not consumed by the template \u2014 dead parameter that should be removed in a follow-up, but not a correctness issue."
+          },
+          {
+            "file": "tests/test_batch_manager.py",
+            "verdict": "approved",
+            "notes": "Covers select_batch() thoroughly (no overlap, overlap skip, max size cap, empty domain). test_run_batch_parallel exercises the real TaskGroup path with stubbed execute_wu() and validates state consistency across concurrent writes. test_execute_wu_passes_locks uses a TrackingLock subclass to assert both state_lock (\u22652 acquisitions: in_progress write + final write) and merge_lock (exactly 1 acquisition) are used correctly. Solid coverage."
+          },
+          {
+            "file": "pyproject.toml",
+            "verdict": "approved",
+            "notes": "pytest-asyncio added to [project.optional-dependencies].test and asyncio_mode = 'auto' set in [tool.pytest.ini_options]. Correct and necessary."
+          },
+          {
+            "file": "tests/__init__.py",
+            "verdict": "approved",
+            "notes": "Empty init, required for pytest package collection. No concerns."
+          }
+        ],
+        "ac_coverage": [
+          {
+            "ac": "run_batch() creates merge_lock = asyncio.Lock() and state_lock = asyncio.Lock() before the TaskGroup",
+            "covered": true,
+            "notes": "Lines 417\u2013418 create both locks; TaskGroup opens at line 430."
+          },
+          {
+            "ac": "All WUs in the batch are launched as tasks inside a single `async with asyncio.TaskGroup() as tg:` block",
+            "covered": true,
+            "notes": "Lines 430\u2013432: single TaskGroup, tg.create_task(_run_one(wu)) for each wu in batch."
+          },
+          {
+            "ac": "Each task receives merge_lock and state_lock",
+            "covered": true,
+            "notes": "The _run_one closure captures both locks from the enclosing scope and passes them to execute_wu() at line 424\u2013426."
+          },
+          {
+            "ac": "The sequential `for wu in batch` loop is removed",
+            "covered": true,
+            "notes": "No awaited sequential loop exists. The for-loop at line 431 is solely for task creation inside the TaskGroup \u2014 all tasks run concurrently."
+          },
+          {
+            "ac": "Verdicts are collected after the TaskGroup closes and used to compute the summary dict",
+            "covered": true,
+            "notes": "results dict is populated inside _run_one (each task's last step). Summary iteration at lines 436\u2013442 is outside the TaskGroup block."
+          },
+          {
+            "ac": "The function returns the same {ready, passed, failed, reshaped} dict",
+            "covered": true,
+            "notes": "Line 435 initialises the dict with all four keys; line 454 returns it."
+          },
+          {
+            "ac": "No sibling task is cancelled when a WU sets needs_user_pivot",
+            "covered": true,
+            "notes": "needs_user_pivot is a state field set inside execute_wu(). execute_wu() catches all exceptions and returns a verdict string \u2014 it never raises, so the TaskGroup never triggers sibling cancellation. Validated by test_run_batch_parallel."
+          }
+        ],
+        "failure_count": 0
+      }
     },
     "WU-004": {
       "id": "WU-004",
@@ -221,11 +286,11 @@
         "WU-002",
         "WU-003"
       ],
-      "status": "pending",
+      "status": "in_progress",
       "estimate_minutes": 25,
       "failure_count": 0,
       "worktree_branch": null
     }
   },
-  "batch_number": 8
+  "batch_number": 11
 }

@@ -23,8 +23,13 @@ import json
 import logging
 import subprocess
 import textwrap
+import traceback
 from pathlib import Path
 from typing import Any
+
+
+def _format_exc() -> str:
+    return traceback.format_exc()
 
 from .planner import (
     _validate,
@@ -33,7 +38,7 @@ from .planner import (
     mark_downstream_blocked,
     schema_example,
 )
-from .sdk_wrapper import AgentHaltError, run_query_json
+from .sdk_wrapper import AgentHaltError, TurnLimitError, run_query, run_query_json
 from .session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -114,6 +119,25 @@ If so, verdict must be "reshape" so the Planner can address the gap.
     {example_reshape}
 """)
 
+
+_RESUME_INSPECTOR_PROMPT = textwrap.dedent("""\
+    An Implementer agent was working on Work Unit {wu_id} but was cut off when it hit
+    the turn limit. The worktree at {wt_path} contains whatever it managed to do.
+
+    ## Work Unit
+    {wu_json}
+
+    ## Your task
+    Inspect the worktree and produce a concise handoff note (plain text, no JSON) for
+    the next Implementer agent that will continue this work. Cover:
+    1. Which acceptance criteria are already satisfied by files on disk.
+    2. Which acceptance criteria are partially addressed and what remains.
+    3. Which acceptance criteria have not been started.
+    4. Any test failures or errors you can see from the current state.
+
+    Be specific and concrete — the next agent will use this note as its starting point.
+    Do not redo any work; only inspect and report.
+""")
 
 # ---------------------------------------------------------------------------
 # Domain overlap check
@@ -300,6 +324,13 @@ async def execute_wu(
 
     except Exception as exc:
         logger.error("Error executing %s: %s", wu_id, exc)
+        # Save a diagnostic file in the session directory so the error is
+        # inspectable after the worktree has been cleaned up.
+        error_log = session_manager.session_dir / "wus" / f"{wu_id}.error.log"
+        error_log.write_text(
+            f"Error: {exc}\n\nTraceback:\n" + _format_exc(),
+            encoding="utf-8",
+        )
         state = session_manager.read_state()
         state["work_units"][wu_id]["status"] = "failed"
         state["work_units"][wu_id]["error"] = str(exc)
@@ -321,12 +352,47 @@ async def _run_implementer(
         example_success=schema_example("implementer_output.json", index=0),
         example_failure=schema_example("implementer_output.json", index=1),
     )
-    report = await run_query_json(
-        prompt,
-        system_prompt=_implementer_system_prompt(),
-        cwd=wt_path,
-        permission_mode="acceptEdits",
-    )
+    system_prompt = _implementer_system_prompt()
+    try:
+        report = await run_query_json(
+            prompt,
+            system_prompt=system_prompt,
+            cwd=wt_path,
+            permission_mode="acceptEdits",
+        )
+    except TurnLimitError as exc:
+        # The implementer was cut off mid-flight.  Save what it produced, then
+        # run a lightweight inspector agent to summarise progress, and hand off
+        # to a fresh implementer session so work already on disk is not lost.
+        logger.warning("%s implementer hit turn limit — inspecting worktree and continuing.", wu["id"])
+        raw_output_path = wt_path / ".overture_implementer_output"
+        raw_output_path.write_text(exc.partial_text, encoding="utf-8")
+
+        inspector_prompt = _RESUME_INSPECTOR_PROMPT.format(
+            wu_id=wu["id"],
+            wt_path=wt_path,
+            wu_json=json.dumps(wu, indent=2),
+        )
+        handoff_note, _ = await run_query(
+            inspector_prompt,
+            cwd=wt_path,
+            permission_mode="acceptEdits",
+        )
+
+        resume_prompt = (
+            prompt
+            + f"\n\n## Handoff Note — Previous Agent Was Cut Off\n\n"
+            + handoff_note
+            + "\n\nYou are continuing where the previous agent left off. "
+            "Do not redo work that is already done. Resume from where it stopped."
+        )
+        report = await run_query_json(
+            resume_prompt,
+            system_prompt=system_prompt,
+            cwd=wt_path,
+            permission_mode="acceptEdits",
+        )
+
     _validate(report, "implementer_output.json")
     return report
 

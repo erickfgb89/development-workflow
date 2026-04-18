@@ -1,0 +1,36 @@
+Error: Command failed with exit code 1 (exit code: 1)
+Error output: Check stderr output for details
+
+Traceback:
+Traceback (most recent call last):
+  File "/home/ealdaz/dev/overture/src/overture/batch_manager.py", line 282, in execute_wu
+    impl_report = await _run_implementer(wu, wt_path, context_md)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ealdaz/dev/overture/src/overture/batch_manager.py", line 357, in _run_implementer
+    report = await run_query_json(
+             ^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+    )
+    ^
+  File "/home/ealdaz/dev/overture/src/overture/sdk_wrapper.py", line 144, in run_query_json
+    text, _ = await run_query(
+              ^^^^^^^^^^^^^^^^
+    ...<6 lines>...
+    )
+    ^
+  File "/home/ealdaz/dev/overture/src/overture/sdk_wrapper.py", line 110, in run_query
+    async for message in query(prompt=prompt, options=options):
+    ...<5 lines>...
+            result_msg = message
+  File "/home/ealdaz/dev/overture/.venv/lib/python3.14/site-packages/claude_agent_sdk/query.py", line 123, in query
+    async for message in client.process_query(
+    ...<2 lines>...
+        yield message
+  File "/home/ealdaz/dev/overture/.venv/lib/python3.14/site-packages/claude_agent_sdk/_internal/client.py", line 157, in process_query
+    async for data in query.receive_messages():
+    ...<2 lines>...
+            yield message
+  File "/home/ealdaz/dev/overture/.venv/lib/python3.14/site-packages/claude_agent_sdk/_internal/query.py", line 732, in receive_messages
+    raise Exception(message.get("error", "Unknown error"))
+Exception: Command failed with exit code 1 (exit code: 1)
+Error output: Check stderr output for details
