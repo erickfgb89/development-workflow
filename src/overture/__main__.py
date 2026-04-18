@@ -6,8 +6,10 @@ Usage:
     TARGET_REPO defaults to the current working directory.
 
 Flags:
-    -v, --verbose   Enable verbose logging
-    --resume SLUG   Resume an existing session by slug
+    -v, --verbose        Enable verbose logging
+    --resume SLUG        Resume an existing session by slug
+    --reset-failed       (with --resume) Reset all failed/in-progress WUs to
+                         pending before resuming, so they will be retried.
 """
 
 from __future__ import annotations
@@ -40,6 +42,11 @@ def _parse_args() -> argparse.Namespace:
         metavar="SLUG",
         help="Resume an existing session by its slug",
     )
+    parser.add_argument(
+        "--reset-failed",
+        action="store_true",
+        help="(with --resume) Reset all failed/in-progress WUs to pending before resuming",
+    )
     return parser.parse_args()
 
 
@@ -57,13 +64,24 @@ def main() -> None:
         sys.exit(1)
 
     if args.resume:
-        asyncio.run(_resume(target_repo, args.resume, verbose=args.verbose))
+        asyncio.run(_resume(
+            target_repo,
+            args.resume,
+            verbose=args.verbose,
+            reset_failed=args.reset_failed,
+        ))
     else:
         from .orchestrator import run
         asyncio.run(run(target_repo, verbose=args.verbose))
 
 
-async def _resume(target_repo: Path, session_slug: str, *, verbose: bool) -> None:
+async def _resume(
+    target_repo: Path,
+    session_slug: str,
+    *,
+    verbose: bool,
+    reset_failed: bool = False,
+) -> None:
     """Resume an existing session from the batch-execution phase."""
     from .batch_manager import run_batch
     from .planner import get_ready_wus, resume_from_planner_output, run_plan
@@ -85,6 +103,22 @@ async def _resume(target_repo: Path, session_slug: str, *, verbose: bool) -> Non
             # Planner never ran at all — re-run it from context.md.
             print("No state.json found — re-running planner from context.md…")
             await run_plan(sm, target_repo, verbose=verbose)
+
+    if reset_failed:
+        state = sm.read_state()
+        reset_ids = []
+        for wid, wu in state["work_units"].items():
+            if wu["status"] in ("failed", "in_progress"):
+                wu["status"] = "pending"
+                wu.pop("needs_user_pivot", None)
+                wu.pop("error", None)
+                wu.pop("agent_error", None)
+                reset_ids.append(wid)
+        if reset_ids:
+            sm.write_state(state)
+            print(f"Reset to pending: {', '.join(sorted(reset_ids))}")
+        else:
+            print("No failed/in-progress WUs to reset.")
 
     while True:
         state = sm.read_state()

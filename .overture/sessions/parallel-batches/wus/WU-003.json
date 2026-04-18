@@ -18,5 +18,33 @@
     "WU-002"
   ],
   "status": "pending",
-  "estimate_minutes": 20
+  "estimate_minutes": 20,
+  "failure_count": 0,
+  "worktree_branch": null,
+  "implementer_report": {
+    "wu_id": "WU-003",
+    "status": "success",
+    "summary": "Refactored run_batch() to use asyncio.TaskGroup for parallel WU execution. execute_wu() gained merge_lock and state_lock parameters; every write_state() site now follows the acquire\u2192re-read\u2192apply\u2192write pattern via state_lock; merge_branch() is serialised via merge_lock. The sequential for-loop is gone \u2014 all batch WUs are launched as tasks inside a single `async with asyncio.TaskGroup() as tg:` block and verdicts are collected into a dict after the TaskGroup closes. The per-iteration needs_user_pivot break is removed; pivot detection is reported post-batch for the orchestrator. pytest-asyncio added to pyproject.toml; tests/test_batch_manager.py created with test_select_batch_no_overlap, test_select_batch_with_overlap, test_select_batch_respects_max_size, test_select_batch_empty_domain, test_run_batch_parallel (integration), and test_execute_wu_passes_locks.",
+    "files_touched": [
+      "src/overture/batch_manager.py",
+      "pyproject.toml",
+      "tests/__init__.py",
+      "tests/test_batch_manager.py"
+    ],
+    "domain_breaches": [
+      {
+        "file": "pyproject.toml",
+        "justification": "AC8 explicitly requires pytest-asyncio be added as a test dependency in pyproject.toml; touching this file is mandated by the acceptance criteria."
+      },
+      {
+        "file": "tests/__init__.py",
+        "justification": "Empty init required to make tests/ a Python package so pytest can collect test_batch_manager.py correctly."
+      },
+      {
+        "file": "tests/test_batch_manager.py",
+        "justification": "ACs 6 and 7 explicitly require unit tests for select_batch() and an integration test; a test file must be created outside solution_domain to satisfy them."
+      }
+    ],
+    "commit_message": "feat(WU-003): parallelise run_batch() via asyncio.TaskGroup with merge/state locking"
+  }
 }

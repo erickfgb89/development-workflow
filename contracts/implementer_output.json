@@ -11,9 +11,15 @@
       "summary": "Created ImageStore class with save() and retrieve() methods. All three ACs pass.",
       "files_touched": [
         "src/storage.py",
-        "tests/test_storage.py"
+        "tests/test_storage.py",
+        "conftest.py"
       ],
-      "domain_breaches": [],
+      "domain_breaches": [
+        {
+          "file": "conftest.py",
+          "justification": "Added a shared pytest fixture for temporary storage directories. This file was not listed in solution_domain but is required by both test_storage.py and future test modules; touching it is unavoidable to avoid duplicating fixture code."
+        }
+      ],
       "commit_message": "feat(WU-001): implement local image storage service"
     },
     {
