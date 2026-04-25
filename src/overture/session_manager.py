@@ -4,6 +4,18 @@ Handles:
 - UUID-based session directory creation inside the target repo's .overture/
 - Renaming UUID folders to human-readable slugs once context is gathered
 - Writing/reading session state files (context.md, state.json, wus/)
+
+Two storage modes
+-----------------
+Repo-coupled (original, used by CLI orchestration)
+    Sessions live at  <target_repo>/.overture/sessions/<slug>/
+    Created via  SessionManager(target_repo)
+
+Central-store (used by --web-server)
+    Sessions live at  <data_dir>/<slug>/
+    Each session dir contains a ``repo_path`` file recording the target repo.
+    Created via  SessionManager.for_web(data_dir, target_repo)
+    Loaded  via  SessionManager.load_web_session(data_dir, session_id)
 """
 
 import json
@@ -24,18 +36,84 @@ class SessionManager:
         self.target_repo = target_repo.resolve()
         self._session_id: str | None = None
         self._session_dir: Path | None = None
+        # In repo-coupled mode sessions_root is always under the repo.
+        self._custom_sessions_root: Path | None = None
 
     # ------------------------------------------------------------------
-    # Creation
+    # Alternative constructors (web / central-store mode)
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def for_web(cls, data_dir: Path, target_repo: Path) -> "SessionManager":
+        """Create a new session in *data_dir* for *target_repo*.
+
+        Writes a ``repo_path`` file so the session can be reloaded later.
+        """
+        sm = cls.__new__(cls)
+        sm.target_repo = target_repo.resolve()
+        sm._session_id = None
+        sm._session_dir = None
+        sm._custom_sessions_root = data_dir.resolve()
+        # Create the session immediately
+        sm._create_session()
+        return sm
+
+    @classmethod
+    def load_web_session(cls, data_dir: Path, session_id: str) -> "SessionManager":
+        """Load an existing web session from *data_dir*."""
+        data_dir = data_dir.resolve()
+        session_dir = data_dir / session_id
+        if not session_dir.exists():
+            raise FileNotFoundError(f"Session '{session_id}' not found in {data_dir}")
+        repo_path_file = session_dir / "repo_path"
+        if not repo_path_file.exists():
+            raise FileNotFoundError(f"Session '{session_id}' is missing repo_path file")
+        target_repo = Path(repo_path_file.read_text(encoding="utf-8").strip())
+
+        sm = cls.__new__(cls)
+        sm.target_repo = target_repo
+        sm._session_id = session_id
+        sm._session_dir = session_dir
+        sm._custom_sessions_root = data_dir
+        return sm
+
+    @classmethod
+    def list_web_sessions(cls, data_dir: Path) -> list[dict[str, str]]:
+        """Return all sessions stored in *data_dir*.
+
+        Each entry is  {"id": slug, "repo": path_str}.
+        """
+        data_dir = data_dir.resolve()
+        if not data_dir.exists():
+            return []
+        results = []
+        for p in sorted(data_dir.iterdir()):
+            if not p.is_dir():
+                continue
+            rp_file = p / "repo_path"
+            repo = rp_file.read_text(encoding="utf-8").strip() if rp_file.exists() else ""
+            results.append({"id": p.name, "repo": repo})
+        return results
+
+    # ------------------------------------------------------------------
+    # Creation (repo-coupled mode)
     # ------------------------------------------------------------------
 
     def new_session(self) -> str:
         """Create a fresh UUID-named session directory and return its ID."""
+        return self._create_session()
+
+    def _create_session(self) -> str:
         self._session_id = str(uuid.uuid4())
         self._session_dir = self._sessions_root / self._session_id
         self._session_dir.mkdir(parents=True, exist_ok=True)
         (self._session_dir / "wus").mkdir(exist_ok=True)
         (self._session_dir / "worktrees").mkdir(exist_ok=True)
+        # In web/central-store mode record which repo this session belongs to.
+        if self._custom_sessions_root is not None:
+            (self._session_dir / "repo_path").write_text(
+                str(self.target_repo), encoding="utf-8"
+            )
         return self._session_id
 
     # ------------------------------------------------------------------
@@ -144,11 +222,11 @@ class SessionManager:
         return self._require_dir()
 
     # ------------------------------------------------------------------
-    # Persistence helpers (load existing session)
+    # Persistence helpers (load existing session — repo-coupled mode)
     # ------------------------------------------------------------------
 
     def load_session(self, session_id: str) -> None:
-        """Load an existing session by ID or slug."""
+        """Load an existing session by ID or slug (repo-coupled mode)."""
         candidate = self._sessions_root / session_id
         if not candidate.exists():
             raise FileNotFoundError(f"Session '{session_id}' not found under {self._sessions_root}")
@@ -168,6 +246,8 @@ class SessionManager:
 
     @property
     def _sessions_root(self) -> Path:
+        if self._custom_sessions_root is not None:
+            return self._custom_sessions_root
         return self.target_repo / self.SESSIONS_DIR
 
     def _require_dir(self) -> Path:

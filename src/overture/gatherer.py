@@ -1,14 +1,20 @@
 """Interactive context gatherer.
 
 Runs a multi-turn terminal conversation with the Gatherer agent to produce
-context.md for the session.  UI features:
+context.md for the session.  Two modes:
 
+Terminal mode (run_gather):
 - Bottom status bar showing session slug, turn count, and phase.
 - Backslash-continuation: a line ending with '\\' lets the user keep typing
   before submitting (mimics Claude Code's Shift+Enter multi-line behaviour
   on dumb terminals).
 - '/done' command signals "happy path" — session is renamed and context saved.
 - '/abort' exits without saving.
+
+Web mode (WebGathererSession):
+- Manages a persistent GathererSession across multiple HTTP requests.
+- Caller drives the loop: send() for each user turn, done() to finalise.
+- Context is written to session_manager when done() is called.
 """
 
 from __future__ import annotations
@@ -257,3 +263,86 @@ def _extract_slug(context_md: str) -> str:
                 continue
             return slug
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Web-mode gatherer (driven by HTTP rather than terminal input)
+# ---------------------------------------------------------------------------
+
+class WebGathererSession:
+    """A persistent gatherer conversation that lives across HTTP requests.
+
+    Lifecycle::
+
+        wgs = WebGathererSession(session_manager, target_repo)
+        opening_message = await wgs.start()   # kick off the agent
+        reply = await wgs.send("user text")   # one turn
+        slug  = await wgs.done()              # finalise → writes context.md
+        await wgs.close()                     # cleanup
+
+    The caller is responsible for calling close() (or using the async context
+    manager) when the session is no longer needed.
+    """
+
+    def __init__(self, session_manager: SessionManager, target_repo: Path) -> None:
+        self._sm = session_manager
+        self._target_repo = target_repo
+        self._system_prompt = _gatherer_system_prompt()
+        self._session: GathererSession | None = None
+
+    async def __aenter__(self) -> "WebGathererSession":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
+    async def start(self) -> str:
+        """Open the SDK session and return the first agent message."""
+        self._session = GathererSession(
+            system_prompt=self._system_prompt,
+            cwd=self._target_repo,
+        )
+        await self._session.__aenter__()
+        reply = await self._session.send(_INITIAL_AGENT_PROMPT)
+        return reply
+
+    async def send(self, user_text: str) -> str:
+        """Send one user turn and return the agent reply."""
+        if self._session is None:
+            raise RuntimeError("WebGathererSession not started — call start() first")
+        return await self._session.send(user_text)
+
+    async def done(self) -> str:
+        """Finalise: ask the agent to write context.md, persist it, rename session.
+
+        Returns the final session slug.
+        """
+        if self._session is None:
+            raise RuntimeError("WebGathererSession not started — call start() first")
+
+        context_reply = await self._session.send(
+            "The developer has signalled they are done providing context.  "
+            "Now write the complete context.md document.  "
+            "Format it with: ## Goal, ## Current State, ## Constraints, "
+            "## Acceptance Criteria, and ## Notes sections.  "
+            "\n\n"
+            "IMPORTANT: The first line after ## Goal will be used as the session name. "
+            "It must be 2–5 words, terse, and suitable for browser tabs, directory names, and logs. "
+            "Examples: 'Implement user auth', 'Fix search performance', 'Add dark mode toggle'. "
+            "Avoid complete sentences or complex grammar. "
+            "\n\n"
+            "Output ONLY the markdown, no extra commentary."
+        )
+        self._sm.write_context(context_reply)
+        slug = _extract_slug(context_reply) or self._sm.session_id
+        final_slug = self._sm.rename_to_slug(slug)
+        return final_slug
+
+    async def close(self) -> None:
+        """Tear down the underlying SDK session."""
+        if self._session is not None:
+            try:
+                await self._session.__aexit__(None, None, None)
+            except Exception:
+                pass
+            self._session = None

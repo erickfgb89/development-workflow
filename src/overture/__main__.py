@@ -57,7 +57,15 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=7337,
         metavar="PORT",
-        help="Port for the web dashboard (default: 7337, requires --ui)",
+        help="Port for the web dashboard (default: 7337, requires --ui or --web-server)",
+    )
+    parser.add_argument(
+        "--web-server",
+        action="store_true",
+        help=(
+            "Start only the web server — no automatic session or orchestration. "
+            "The user drives the entire session lifecycle from the browser."
+        ),
     )
     return parser.parse_args()
 
@@ -75,7 +83,12 @@ def main() -> None:
         print(f"Error: {target_repo} is not a directory.", file=sys.stderr)
         sys.exit(1)
 
-    if args.resume:
+    if args.web_server:
+        import os
+        from .web_ui.server import start_ui_server_standalone
+        data_dir = Path(os.path.expanduser("~/.overture/sessions"))
+        asyncio.run(start_ui_server_standalone(data_dir, port=args.port))
+    elif args.resume:
         asyncio.run(_resume(
             target_repo,
             args.resume,
