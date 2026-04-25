@@ -740,12 +740,13 @@
 
 </div><!-- /#app -->
 
-<!-- Libraries -->
-<script src="https://unpkg.com/alpinejs@3/dist/cdn.min.js" defer></script>
-<script src="https://d3js.org/d3.v7.min.js"></script>
+<!-- D3 and DAG renderer must load before Alpine so dag.js is available -->
+<script src="/static/d3.min.js"></script>
 <script src="/static/dag.js"></script>
 
 <script>
+/* Alpine app definition must be registered BEFORE alpine.min.js is loaded
+   so that alpine:init fires with the component already registered. */
 /* ===========================================================
    Alpine.js application
    =========================================================== */
@@ -961,7 +962,6 @@ document.addEventListener('alpine:init', () => {
           .find(el => el.querySelector('.wu-id')?.textContent === wu.id);
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
-    },
     },
 
     // ---- Landing actions ----
@@ -1511,5 +1511,8 @@ document.addEventListener('alpine:init', () => {
   }));
 });
 </script>
+
+<!-- Alpine must load AFTER the alpine:init listener is registered above -->
+<script src="/static/alpine.min.js"></script>
 </body>
 </html>

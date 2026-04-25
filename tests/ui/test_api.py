@@ -313,3 +313,170 @@ class TestGatherValidation:
     async def test_gather_start_unknown_session_returns_404(self, client):
         r = await client.post("/api/gather/start", json={"session_id": "nope"})
         assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# /api/files
+# ---------------------------------------------------------------------------
+
+class TestFilesSearch:
+    async def test_empty_repo_returns_empty(self, client):
+        r = await client.get("/api/files", params={"repo": "", "q": ""})
+        assert r.status_code == 200
+        assert r.json() == {"files": []}
+
+    async def test_nonexistent_repo_returns_empty(self, client):
+        r = await client.get("/api/files", params={"repo": "/nonexistent/zzz", "q": ""})
+        assert r.status_code == 200
+        assert r.json() == {"files": []}
+
+    async def test_returns_files_in_repo(self, client, tmp_repo):
+        # tmp_repo already has README.md
+        r = await client.get("/api/files", params={"repo": str(tmp_repo), "q": ""})
+        assert r.status_code == 200
+        files = r.json()["files"]
+        assert isinstance(files, list)
+        assert any("README.md" in f for f in files)
+
+    async def test_filter_by_query(self, client, tmp_repo):
+        # Add a second file
+        (tmp_repo / "main.py").write_text("# main")
+        r = await client.get("/api/files", params={"repo": str(tmp_repo), "q": "main"})
+        files = r.json()["files"]
+        assert all("main" in f.lower() for f in files)
+        assert any("main.py" in f for f in files)
+
+    async def test_hidden_files_excluded(self, client, tmp_repo):
+        (tmp_repo / ".hidden.py").write_text("secret")
+        r = await client.get("/api/files", params={"repo": str(tmp_repo), "q": ""})
+        files = r.json()["files"]
+        assert not any(f.startswith(".") or "/.hidden" in f for f in files)
+
+    async def test_hidden_dirs_excluded(self, client, tmp_repo):
+        hidden_dir = tmp_repo / ".cache"
+        hidden_dir.mkdir()
+        (hidden_dir / "data.txt").write_text("cached")
+        r = await client.get("/api/files", params={"repo": str(tmp_repo), "q": ""})
+        files = r.json()["files"]
+        assert not any(".cache" in f for f in files)
+
+    async def test_caps_at_30(self, client, tmp_path):
+        repo = tmp_path / "bigproject"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        for i in range(40):
+            (repo / f"file_{i:02d}.py").write_text("")
+        r = await client.get("/api/files", params={"repo": str(repo), "q": ""})
+        assert len(r.json()["files"]) <= 30
+
+    async def test_results_are_relative_paths(self, client, tmp_repo):
+        src = tmp_repo / "src"
+        src.mkdir()
+        (src / "app.py").write_text("")
+        r = await client.get("/api/files", params={"repo": str(tmp_repo), "q": ""})
+        files = r.json()["files"]
+        assert not any(f.startswith("/") for f in files)
+
+
+# ---------------------------------------------------------------------------
+# /api/diff
+# ---------------------------------------------------------------------------
+
+def _make_real_git_repo(path):
+    """Create a real git repo with one commit, returns commit sha."""
+    import subprocess
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True, capture_output=True)
+    (path / "hello.py").write_text("print('hello')\n")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "feat(WU-001): add hello.py"], cwd=path, check=True, capture_output=True)
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=path, text=True).strip()
+    return sha
+
+
+class TestDiffEndpoint:
+    async def test_no_session_returns_404(self, client):
+        r = await client.get("/api/diff", params={"session_id": "nope", "wu_id": "WU-001"})
+        assert r.status_code == 404
+
+    async def test_missing_wu_returns_404(self, client, make_session, seed_session):
+        sid = await make_session()
+        seed_session(sid, state=_make_state({"WU-001": _wu("WU-001", status="completed")}))
+        r = await client.get("/api/diff", params={"session_id": sid, "wu_id": "WU-999"})
+        assert r.status_code == 404
+
+    async def test_wu_without_commit_returns_empty_files(self, client, make_session, seed_session):
+        sid = await make_session()
+        # Completed WU with no commit_sha and no matching git log entry
+        seed_session(sid, state=_make_state({"WU-001": _wu("WU-001", status="completed")}))
+        r = await client.get("/api/diff", params={"session_id": sid, "wu_id": "WU-001"})
+        assert r.status_code == 200
+        data = r.json()
+        assert "files" in data
+        assert data["files"] == []
+
+    async def test_diff_with_commit_sha(self, client, tmp_path, tmp_data_dir):
+        """End-to-end: real git repo + commit_sha stored in state → diff is returned."""
+        import subprocess
+        from overture.web_ui.server import _build_app
+        from httpx import AsyncClient, ASGITransport
+
+        repo = tmp_path / "gitrepo"
+        sha = _make_real_git_repo(repo)
+
+        app = _build_app(None, standalone=True, data_dir=tmp_data_dir)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            # Create session pointing at this real git repo
+            r = await c.post("/api/session/new", json={"repo_path": str(repo)})
+            sid = r.json()["session_id"]
+
+            # Seed state with commit_sha on the WU
+            wu = _wu("WU-001", status="completed")
+            wu["commit_sha"] = sha
+            state = _make_state({"WU-001": wu})
+            (tmp_data_dir / sid / "state.json").write_text(json.dumps(state))
+
+            r = await c.get("/api/diff", params={"session_id": sid, "wu_id": "WU-001"})
+            assert r.status_code == 200
+            data = r.json()
+            assert data["commit_sha"] == sha
+            assert isinstance(data["files"], list)
+            assert len(data["files"]) >= 1
+            f = data["files"][0]
+            assert f["path"] == "hello.py"
+            assert isinstance(f["additions"], int)
+            assert f["additions"] > 0
+            assert isinstance(f["beforeLines"], list)
+            assert isinstance(f["afterLines"], list)
+            # At least one add line in afterLines
+            assert any(line["type"] == "add" for line in f["afterLines"])
+
+    async def test_diff_fallback_git_grep(self, client, tmp_path, tmp_data_dir):
+        """Without commit_sha, endpoint falls back to git log --grep."""
+        import subprocess
+        from overture.web_ui.server import _build_app
+        from httpx import AsyncClient, ASGITransport
+
+        repo = tmp_path / "greprepo"
+        sha = _make_real_git_repo(repo)  # commit msg contains WU-001
+
+        app = _build_app(None, standalone=True, data_dir=tmp_data_dir)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+            r = await c.post("/api/session/new", json={"repo_path": str(repo)})
+            sid = r.json()["session_id"]
+
+            # Seed state WITHOUT commit_sha
+            wu = _wu("WU-001", status="completed")
+            state = _make_state({"WU-001": wu})
+            (tmp_data_dir / sid / "state.json").write_text(json.dumps(state))
+
+            r = await c.get("/api/diff", params={"session_id": sid, "wu_id": "WU-001"})
+            assert r.status_code == 200
+            data = r.json()
+            # git log --oneline returns a short sha; verify it's a prefix of the full sha
+            assert sha.startswith(data["commit_sha"]), (
+                f"Expected {sha!r} to start with {data['commit_sha']!r}"
+            )
+            assert len(data["files"]) >= 1
