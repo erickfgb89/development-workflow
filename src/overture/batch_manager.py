@@ -231,11 +231,13 @@ def remove_worktree(wu_id: str, session_manager: SessionManager, target_repo: Pa
         logger.warning("Could not delete branch %s — may not exist or already deleted.", branch)
 
 
-def merge_branch(wu_id: str, target_repo: Path, commit_message: str) -> None:
+def merge_branch(wu_id: str, target_repo: Path, commit_message: str) -> str | None:
     """Merge the WU branch into the current branch (squash merge).
 
     The implementer edits files in the worktree directly; it does not commit them.
     We therefore stage everything that changed before committing.
+
+    Returns the resulting commit SHA, or None if there was nothing to commit.
     """
     branch = f"wu/{wu_id.lower()}"
     _git(["merge", "--squash", branch], target_repo)
@@ -249,9 +251,15 @@ def merge_branch(wu_id: str, target_repo: Path, commit_message: str) -> None:
     if result.returncode != 0:
         # returncode 1 means there are staged changes
         _git(["commit", "-m", commit_message], target_repo)
+        sha = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=target_repo, text=True
+        ).strip()
+        logger.info("Merged %s into HEAD as %s", branch, sha)
+        return sha
     else:
         logger.warning("WU-%s squash merge produced no changes; skipping commit.", wu_id)
-    logger.info("Merged %s into HEAD", branch)
+        logger.info("Merged %s into HEAD (no-op)", branch)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -291,9 +299,11 @@ async def execute_wu(
 
         if verdict == "pass":
             commit_msg = impl_report.get("commit_message", f"feat: implement {wu_id}")
-            merge_branch(wu_id, target_repo, commit_msg)
+            commit_sha = merge_branch(wu_id, target_repo, commit_msg)
             wu_state["status"] = "completed"
             wu_state["worktree_branch"] = None
+            if commit_sha:
+                wu_state["commit_sha"] = commit_sha
         elif verdict == "reshape":
             wu_state["status"] = "failed"
             wu_state["reshape_requested"] = True

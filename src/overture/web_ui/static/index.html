@@ -625,7 +625,13 @@
 
       <!-- Diff panel -->
       <div class="modal-body">
-        <template x-if="diffModal.files.length > 0 && diffModal.files[diffModal.activeFile]">
+        <template x-if="diffModal.loading">
+          <div class="loading-overlay" style="min-height:120px;">
+            <div class="spinner"></div>
+            <span>Loading diff…</span>
+          </div>
+        </template>
+        <template x-if="!diffModal.loading && diffModal.files.length > 0 && diffModal.files[diffModal.activeFile]">
           <div class="diff-panel">
             <div class="diff-col">
               <div class="diff-col-head">before — <span x-text="diffModal.files[diffModal.activeFile]?.path"></span></div>
@@ -647,7 +653,7 @@
             </div>
           </div>
         </template>
-        <template x-if="diffModal.files.length === 0">
+        <template x-if="!diffModal.loading && diffModal.files.length === 0">
           <div class="agents-empty">No diff data available for this work unit.</div>
         </template>
       </div>
@@ -796,6 +802,7 @@ document.addEventListener('alpine:init', () => {
     // Diff modal
     diffModal: {
       open: false,
+      loading: false,
       wu: null,
       files: [],
       activeFile: 0,
@@ -1408,24 +1415,39 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ---- Diff modal ----
-    openDiff(wu, focusFile) {
+    async openDiff(wu, focusFile) {
       this.diffModal.wu = wu;
-      const report = wu.implementer_report || {};
-      const files = (report.files_touched || []).map(f => ({
-        path: f,
-        additions: null,
-        deletions: null,
-        beforeLines: [],
-        afterLines: [{ type: 'add', ln: 1, text: '/* diff output not yet available */' }],
-      }));
-      this.diffModal.files = files;
-      const idx = files.findIndex(f => f.path === focusFile);
-      this.diffModal.activeFile = idx === -1 ? 0 : idx;
-      this.diffModal.commitMeta = report.commit_message
-        ? `commit ${report.commit_message.slice(0, 8)} · ${wu.id}`
-        : `${wu.id} · no commit recorded`;
-      this.diffModal.totals = `${files.length} file(s) changed`;
+      this.diffModal.files = [];
+      this.diffModal.activeFile = 0;
+      this.diffModal.commitMeta = 'loading…';
+      this.diffModal.totals = '';
+      this.diffModal.loading = true;
       this.diffModal.open = true;
+
+      try {
+        const params = new URLSearchParams({ session_id: this.activeSession || '', wu_id: wu.id });
+        const r = await fetch(`/api/diff?${params}`);
+        const data = await r.json();
+
+        if (data.error && !data.files?.length) {
+          this.diffModal.commitMeta = `${wu.id} · ${data.error}`;
+          this.diffModal.totals = '';
+        } else {
+          const files = data.files || [];
+          this.diffModal.files = files;
+          const idx = files.findIndex(f => f.path === focusFile);
+          this.diffModal.activeFile = idx === -1 ? 0 : idx;
+          const sha = data.commit_sha ? data.commit_sha.slice(0, 8) : '—';
+          this.diffModal.commitMeta = `${wu.id} · ${wu.title} · ${sha}`;
+          const adds = files.reduce((s, f) => s + (f.additions || 0), 0);
+          const dels = files.reduce((s, f) => s + (f.deletions || 0), 0);
+          this.diffModal.totals = `${files.length} file(s) · +${adds} −${dels}`;
+        }
+      } catch (e) {
+        this.diffModal.commitMeta = `${wu.id} · failed to load diff`;
+      } finally {
+        this.diffModal.loading = false;
+      }
     },
 
     // ---- Reshape modal ----

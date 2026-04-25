@@ -1066,6 +1066,8 @@ textarea.ctx-editor-body {
 .diff-line.rem { background: rgba(224, 82, 82, 0.12); }
 .diff-line.add .ln { color: var(--green); }
 .diff-line.rem .ln { color: var(--red); }
+.diff-line.hunk { background: rgba(88, 120, 200, 0.10); color: var(--text-2); font-style: italic; }
+.diff-line.empty { background: rgba(0,0,0,0.04); }
 
 /* ==============================================================
    RESHAPE / PIVOT MODAL  (Screen 7)

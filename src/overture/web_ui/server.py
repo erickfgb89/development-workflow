@@ -160,6 +160,76 @@ def _build_app(sm: Any, *, standalone: bool = False, data_dir: Path | None = Non
         matches.sort()
         return JSONResponse({"files": matches})
 
+    # ------------------------------------------------------------------ diff (shared)
+
+    @app.get("/api/diff")
+    async def get_diff(session_id: str = "", wu_id: str = "") -> JSONResponse:
+        """Return parsed unified diff for a completed WU.
+
+        Looks up the WU's commit_sha from state.json, then runs
+        ``git show --patch <sha>`` in the target repo and parses the result
+        into per-file before/after line arrays suitable for the side-by-side
+        diff modal.
+        """
+        import subprocess as _sp
+
+        # Resolve session manager
+        if not standalone:
+            sess_sm: SessionManager | None = sm
+        else:
+            sess_sm = _get_sm(session_id)  # type: ignore[name-defined]
+
+        if sess_sm is None:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+
+        try:
+            state = sess_sm.read_state()
+        except FileNotFoundError:
+            return JSONResponse({"error": "no state"}, status_code=404)
+
+        wus = state.get("work_units", {})
+        if wu_id not in wus:
+            return JSONResponse({"error": "WU not found"}, status_code=404)
+
+        wu = wus[wu_id]
+        commit_sha = wu.get("commit_sha")
+
+        # Fallback: search git log by WU id in commit message
+        target_repo = sess_sm.target_repo
+        if not commit_sha:
+            try:
+                result = _sp.run(
+                    ["git", "log", "--oneline", "--grep", wu_id, "-n", "1"],
+                    cwd=target_repo,
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    commit_sha = result.stdout.strip().split()[0]
+            except Exception:
+                pass
+
+        if not commit_sha:
+            return JSONResponse({"files": [], "error": "no commit found for this WU"})
+
+        try:
+            result = _sp.run(
+                ["git", "show", "--patch", "--unified=3", commit_sha],
+                cwd=target_repo,
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=500)
+
+        if result.returncode != 0:
+            return JSONResponse({"error": result.stderr.strip() or "git show failed"}, status_code=500)
+
+        files = _parse_unified_diff(result.stdout)
+        return JSONResponse({"files": files, "commit_sha": commit_sha})
+
     # ------------------------------------------------------------------ REST (non-standalone)
 
     if not standalone:
@@ -568,6 +638,93 @@ def _build_app(sm: Any, *, standalone: bool = False, data_dir: Path | None = Non
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     return app
+
+
+def _parse_unified_diff(patch: str) -> list[dict]:
+    """Parse a ``git show --patch`` output into per-file diff objects.
+
+    Each entry::
+
+        {
+          "path": "src/foo.py",
+          "additions": int,
+          "deletions": int,
+          "beforeLines": [{"ln": int|None, "text": str, "type": "normal"|"del"|"add"}],
+          "afterLines":  [{"ln": int|None, "text": str, "type": "normal"|"del"|"add"}],
+        }
+    """
+    files: list[dict] = []
+    current: dict | None = None
+    before_ln = 0
+    after_ln = 0
+
+    for raw_line in patch.splitlines():
+        # New file section
+        if raw_line.startswith("diff --git "):
+            if current is not None:
+                files.append(current)
+            current = {
+                "path": "",
+                "additions": 0,
+                "deletions": 0,
+                "beforeLines": [],
+                "afterLines": [],
+            }
+            before_ln = 0
+            after_ln = 0
+            continue
+
+        if current is None:
+            continue
+
+        # Extract canonical path from +++ line (handles renames)
+        if raw_line.startswith("+++ b/"):
+            current["path"] = raw_line[6:]
+            continue
+        if raw_line.startswith("+++ /dev/null"):
+            current["path"] = current["path"] or "(deleted)"
+            continue
+        if raw_line.startswith("--- ") or raw_line.startswith("+++ "):
+            continue
+
+        # Hunk header: @@ -a,b +c,d @@
+        if raw_line.startswith("@@"):
+            import re
+            m = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", raw_line)
+            if m:
+                before_ln = int(m.group(1))
+                after_ln = int(m.group(2))
+            # Render hunk header as a separator on both sides
+            sep = {"ln": None, "text": raw_line, "type": "hunk"}
+            current["beforeLines"].append(sep)
+            current["afterLines"].append(sep)
+            continue
+
+        if raw_line.startswith("-"):
+            text = raw_line[1:]
+            current["beforeLines"].append({"ln": before_ln, "text": text, "type": "rem"})
+            current["afterLines"].append({"ln": None, "text": "", "type": "empty"})
+            current["deletions"] += 1
+            before_ln += 1
+        elif raw_line.startswith("+"):
+            text = raw_line[1:]
+            current["beforeLines"].append({"ln": None, "text": "", "type": "empty"})
+            current["afterLines"].append({"ln": after_ln, "text": text, "type": "add"})
+            current["additions"] += 1
+            after_ln += 1
+        elif raw_line.startswith(" ") or raw_line == "":
+            text = raw_line[1:] if raw_line.startswith(" ") else ""
+            current["beforeLines"].append({"ln": before_ln, "text": text, "type": "normal"})
+            current["afterLines"].append({"ln": after_ln, "text": text, "type": "normal"})
+            before_ln += 1
+            after_ln += 1
+        # skip binary/index/mode lines
+
+    if current is not None:
+        files.append(current)
+
+    # Drop entries with no path (binary files, submodules, etc.)
+    return [f for f in files if f["path"]]
 
 
 async def start_ui_server(sm: Any, port: int = 7337) -> None:

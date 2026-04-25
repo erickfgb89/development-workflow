@@ -13,26 +13,11 @@ Status updated as items are fixed.
 | 2 | context page | `📎 attach` button | Wired to hidden `<input type="file">` |
 | 3 | plan page | "↓ expand all" label | Fixed to toggle label (↓ / ↑) based on current state |
 | 4 | landing | "Start new instead" handler | Simplified from broken ternary to direct `startNewSession()` |
+| 5 | plan/agents/dag | Diff modal placeholder content | Wired to real `/api/diff` endpoint; `merge_branch()` now stores `commit_sha` in state |
 
 ---
 
 ## Remaining
-
-### HIGH — placeholder / no real data
-
-**[A] Diff modal shows no real diff content**
-- File: `index.html` ~line 1397–1414 (`openDiff`)
-- The modal opens and renders, but every file entry shows
-  `/* diff output not yet available */` because there is no `/api/diff` endpoint.
-- Fix needed:
-  1. Add `GET /api/diff?session_id=&wu_id=` to `server.py`.
-     - Locate the WU's merged commit (stored in `wu.implementer_report.commit_sha` or
-       equivalent field in `state.json`).
-     - Run `git show --stat --patch <sha>` in the target repo.
-     - Parse unified diff into `{path, additions, deletions, beforeLines[], afterLines[]}`.
-  2. Call it from `openDiff()` and populate `diffModal.files`.
-- Note: `openDiff(wu, focusFile)` already accepts a `focusFile` arg for jumping to a
-  specific file tab — the data shape is already correct, just needs real content.
 
 ### MEDIUM — label/state mismatch (cosmetic but confusing)
 
