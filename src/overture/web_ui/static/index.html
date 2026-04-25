@@ -142,7 +142,7 @@
             <template x-if="!landing.resumeOn">
               <button class="btn primary" @click="startNewSession()">Start new</button>
             </template>
-            <button class="btn ghost" @click="landing.resumeOn ? startNewSession() : null"
+            <button class="btn ghost" @click="startNewSession()"
               x-show="landing.resumeOn">Start new instead</button>
           </div>
 
@@ -171,7 +171,7 @@
               </div>
               <div class="row between" style="margin-top:8px;">
                 <span class="mono text-muted" style="font-size:11px;">destructive →</span>
-                <button class="btn danger" @click="abortSession()">Abort session</button>
+                <button class="btn danger" @click="abortSession()" :disabled="!activeSession">Abort session</button>
               </div>
             </div>
           </div>
@@ -290,7 +290,8 @@
                 <div class="meta" x-text="planMeta()"></div>
               </div>
               <div class="row" style="gap:8px;">
-                <button class="btn ghost sm" @click="toggleAllWuCards()">↓ expand all</button>
+                <button class="btn ghost sm" @click="toggleAllWuCards()"
+                  x-text="sortedWUs().every(w => expandedWUs[w.id] !== false) ? '↑ collapse all' : '↓ expand all'"></button>
                 <button class="btn sm" @click="replanOpen = !replanOpen">↻ Re-plan</button>
               </div>
             </div>
@@ -480,7 +481,7 @@
                   </div>
                 </template>
                 <div class="popover-actions">
-                  <button class="btn sm ghost" @click="navigate('agents')">view agent output ↗</button>
+                  <button class="btn sm ghost" @click="navigateToAgent(popoverWU)">view agent output ↗</button>
                   <button class="btn sm ghost" @click="openDiff(popoverWU)"
                     :disabled="popoverWU.status !== 'completed'">view diff ↗</button>
                 </div>
@@ -941,6 +942,19 @@ document.addEventListener('alpine:init', () => {
       if (page === 'dag') {
         this.$nextTick(() => this.renderDag());
       }
+    },
+
+    navigateToAgent(wu) {
+      if (!wu) return;
+      this.agentAccOpen[wu.id] = true;
+      this.popover.show = false;
+      this.currentPage = 'agents';
+      this.$nextTick(() => {
+        const el = Array.from(document.querySelectorAll('.agent-accordion'))
+          .find(el => el.querySelector('.wu-id')?.textContent === wu.id);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    },
     },
 
     // ---- Landing actions ----
