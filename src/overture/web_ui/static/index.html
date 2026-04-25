@@ -30,11 +30,11 @@
 
     <!-- Session tabs -->
     <div class="sess-tabs">
-      <template x-for="sess in sessions" :key="sess">
-        <button class="sess-tab" :class="activeSession === sess ? 'active' : ''"
-          @click="switchSession(sess)">
-          <span x-text="sess"></span>
-          <button class="close-btn" @click.stop="closeSession(sess)" title="Close tab">×</button>
+      <template x-for="sess in sessions" :key="sess.id">
+        <button class="sess-tab" :class="activeSession === sess.id ? 'active' : ''"
+          @click="switchSession(sess.id)">
+          <span x-text="sess.label"></span>
+          <button class="close-btn" @click.stop="closeSession(sess.id)" title="Close tab">×</button>
         </button>
       </template>
       <button class="sess-tab add-tab" @click="openLanding()" title="New session">+</button>
@@ -104,9 +104,9 @@
             <label>Project directory</label>
             <div style="position:relative;">
               <input class="input" type="text" x-model="landing.repoInput"
-                placeholder="Search for a git repository…"
+                placeholder="Type to search for a directory…"
                 @input="filterRepos()"
-                @focus="showRepoDrop = landing.repoSuggestions.length > 0"
+                @focus="filterRepos()"
                 @keydown.escape="showRepoDrop = false"
                 autocomplete="off">
               <div class="repo-dropdown" x-show="showRepoDrop" @click.outside="showRepoDrop = false">
@@ -126,10 +126,10 @@
               </div>
             </div>
             <div x-show="landing.resumeOn" style="margin-top:8px;">
-              <select class="input" x-model="landing.selectedSlug">
+              <select class="input" x-model="landing.selectedSessionId">
                 <option value="">— select a session —</option>
-                <template x-for="slug in landing.existingSlugs" :key="slug">
-                  <option :value="slug" x-text="slug"></option>
+                <template x-for="entry in landing.existingSessions" :key="entry.id">
+                  <option :value="entry.id" x-text="entry.id + (entry.repo ? '  (' + entry.repo + ')' : '')"></option>
                 </template>
               </select>
             </div>
@@ -191,9 +191,12 @@
           <!-- Chat panel -->
           <div class="chat-panel">
             <div class="chat-thread" id="chat-thread">
-              <div x-show="chatMessages.length === 0" class="loading-overlay">
+              <div x-show="chatMessages.length === 0 && gatherLoading" class="loading-overlay">
                 <div class="spinner"></div>
                 <span>Initialising Gatherer agent…</span>
+              </div>
+              <div x-show="chatMessages.length === 0 && !gatherLoading" class="loading-overlay">
+                <span style="color:var(--text-2);font-size:13px;">Start a new session or resume one to begin.</span>
               </div>
               <template x-for="(msg, i) in chatMessages" :key="i">
                 <div class="bubble" :class="msg.role === 'user' ? 'user' : 'agent'"
@@ -210,26 +213,29 @@
                 @input="onChatInput($event)"></textarea>
 
               <!-- @ file picker dropdown -->
-              <div x-show="atDropdown.show" style="position:relative;">
-                <div class="repo-dropdown" style="position:absolute;bottom:0;left:0;right:0;z-index:50;">
+              <div x-show="atDropdown.show" @click.outside="atDropdown.show = false" style="position:relative;">
+                <div class="repo-dropdown" style="position:absolute;top:0;left:0;right:0;z-index:50;max-height:200px;overflow-y:auto;">
                   <template x-for="f in atDropdown.files" :key="f">
                     <div class="repo-dropdown-item" @click="insertFileRef(f)" x-text="f"></div>
                   </template>
+                  <div x-show="atDropdown.files.length === 0" class="repo-dropdown-item" style="color:var(--text-2);pointer-events:none;">no matches</div>
                 </div>
               </div>
 
+              <input type="file" id="attach-file-input" multiple style="display:none" @change="onAttachFile($event)">
               <div class="composer-row">
-                <button class="btn sm ghost" title="Attach file">📎 attach</button>
-                <button class="btn sm ghost" @click="atDropdown.show = !atDropdown.show">@ file picker</button>
+                <button class="btn sm ghost" @click="triggerAttach()" title="Attach file">📎 attach</button>
+                <button class="btn sm ghost" @click="openAtPicker()">@ file picker</button>
                 <span class="grow"></span>
-                <button class="btn sm" @click="sendChat()">Send</button>
+                <span x-show="gatherLoading" class="text-muted" style="font-size:12px;margin-right:8px;">agent is thinking…</span>
+                <button class="btn sm" @click="sendChat()" :disabled="gatherLoading">Send</button>
               </div>
               <div class="composer-row confirm-row">
-                <button class="btn primary" @click="confirmContext()" :disabled="contextLocked">
+                <button class="btn primary" @click="confirmContext()" :disabled="contextLocked || gatherLoading">
                   ✓ Context complete — start planning
                 </button>
                 <button class="btn ghost sm" @click="reopenContext()"
-                  :disabled="contextLocked"
+                  :disabled="contextLocked || gatherLoading"
                   :title="contextLocked ? 'Context is locked — work is in progress' : ''"
                   style="opacity:0.6;">
                   ↺ Reopen context gathering
@@ -743,17 +749,17 @@ document.addEventListener('alpine:init', () => {
     wsStatus: 'disconnected',
     sidebarCollapsed: false,
     currentPage: 'landing',
-    activeSession: null,
-    sessions: [],    // slugs shown as tabs
-    state: {},       // current state.json content
+    activeSession: null,   // session_id string
+    sessions: [],          // [{id, label}] — tabs
+    state: {},             // current state.json content
 
     // Landing
     landing: {
       repoInput: '',
       repoSuggestions: [],
       resumeOn: false,
-      selectedSlug: '',
-      existingSlugs: [],
+      selectedSessionId: '',
+      existingSessions: [],   // [{id, repo}] from server
       dangerOpen: false,
       resetFailed: false,
       reshapeOn: false,
@@ -764,10 +770,12 @@ document.addEventListener('alpine:init', () => {
     // Context gathering
     chatMessages: [],
     chatInput: '',
+    gatherLoading: false,
     ctxEditorVisible: true,
     contextContent: '',
     contextLocked: false,
     atDropdown: { show: false, files: [] },
+    sessionRepo: '',
 
     // Plan
     expandedWUs: {},
@@ -806,7 +814,6 @@ document.addEventListener('alpine:init', () => {
 
     // ---- Init ----
     async init() {
-      this.loadSessionsFromStorage();
       this.connectWS();
 
       // DAG popover
@@ -820,14 +827,6 @@ document.addEventListener('alpine:init', () => {
           if (!this.reshapeModal.deadlock) this.reshapeModal.open = false;
         }
       });
-
-      // Fetch existing sessions from server
-      await this.fetchSessions();
-
-      // If we have sessions, switch to the first one
-      if (this.sessions.length > 0 && !this.activeSession) {
-        await this.switchSession(this.sessions[0]);
-      }
     },
 
     // ---- WebSocket ----
@@ -863,16 +862,8 @@ document.addEventListener('alpine:init', () => {
         this.$nextTick(() => this.renderDag());
       }
 
-      // Check for deadlock
-      const wus = newState.work_units || {};
-      const statuses = Object.values(wus).map(w => w.status);
-      const hasDeadlock = statuses.length > 0
-        && !statuses.includes('in_progress')
-        && !statuses.every(s => ['completed', 'failed', 'blocked'].includes(s))
-        && !statuses.every(s => s === 'completed')
-        && Object.values(wus).some(w => w.get && w.get('needs_user_pivot'));
-
       // Auto-open reshape on deadlock
+      const wus = newState.work_units || {};
       const pivotWUs = Object.entries(wus).filter(([, w]) => w.needs_user_pivot);
       if (pivotWUs.length && !this.reshapeModal.open) {
         const [wid, wu] = pivotWUs[0];
@@ -889,44 +880,24 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ---- Session management ----
-    loadSessionsFromStorage() {
-      try {
-        const saved = JSON.parse(localStorage.getItem('overture_sessions') || '[]');
-        if (Array.isArray(saved)) this.sessions = saved;
-      } catch {}
-    },
-    saveSessionsToStorage() {
-      try { localStorage.setItem('overture_sessions', JSON.stringify(this.sessions)); } catch {}
+    _sessionLabel(id) {
+      // Use the human-readable slug part of the id when available
+      return id.length > 30 ? id.slice(0, 28) + '…' : id;
     },
 
-    async fetchSessions() {
-      try {
-        const r = await fetch('/api/sessions');
-        const data = await r.json();
-        const serverSlugs = data.sessions || [];
-        // Add server sessions not already in our list
-        for (const s of serverSlugs) {
-          if (!this.sessions.includes(s)) this.sessions.push(s);
-        }
-        this.landing.existingSlugs = serverSlugs;
-        this.saveSessionsToStorage();
-      } catch {}
-    },
-
-    async switchSession(slug) {
-      this.activeSession = slug;
-      if (!this.sessions.includes(slug)) {
-        this.sessions.push(slug);
-        this.saveSessionsToStorage();
+    async switchSession(sessionId) {
+      this.activeSession = sessionId;
+      if (!this.sessions.find(s => s.id === sessionId)) {
+        this.sessions.push({ id: sessionId, label: this._sessionLabel(sessionId) });
       }
       // Load state
       try {
-        const r = await fetch('/api/state');
+        const r = await fetch('/api/state?session_id=' + encodeURIComponent(sessionId));
         this.state = await r.json();
       } catch {}
       // Load context
       try {
-        const r = await fetch('/api/context');
+        const r = await fetch('/api/context?session_id=' + encodeURIComponent(sessionId));
         const data = await r.json();
         this.contextContent = data.content || '';
       } catch {}
@@ -938,11 +909,10 @@ document.addEventListener('alpine:init', () => {
       }
     },
 
-    closeSession(slug) {
-      this.sessions = this.sessions.filter(s => s !== slug);
-      this.saveSessionsToStorage();
-      if (this.activeSession === slug) {
-        this.activeSession = this.sessions[0] || null;
+    closeSession(sessionId) {
+      this.sessions = this.sessions.filter(s => s.id !== sessionId);
+      if (this.activeSession === sessionId) {
+        this.activeSession = this.sessions[0]?.id || null;
         if (this.activeSession) {
           this.switchSession(this.activeSession);
         } else {
@@ -953,6 +923,16 @@ document.addEventListener('alpine:init', () => {
 
     openLanding() {
       this.currentPage = 'landing';
+      // Refresh the list of resumable sessions each time the landing opens
+      this.fetchExistingSessions();
+    },
+
+    async fetchExistingSessions() {
+      try {
+        const r = await fetch('/api/sessions');
+        const data = await r.json();
+        this.landing.existingSessions = data.sessions || [];
+      } catch {}
     },
 
     // ---- Navigation ----
@@ -964,14 +944,17 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ---- Landing actions ----
-    filterRepos() {
-      const q = this.landing.repoInput.toLowerCase();
-      if (!q) { this.showRepoDrop = false; return; }
-      // In production this would query the server; here we just filter known slugs
-      this.landing.repoSuggestions = this.landing.existingSlugs
-        .filter(s => s.toLowerCase().includes(q))
-        .slice(0, 8);
-      this.showRepoDrop = this.landing.repoSuggestions.length > 0;
+    async filterRepos() {
+      const q = this.landing.repoInput.trim();
+      if (!q) { this.showRepoDrop = false; this.landing.repoSuggestions = []; return; }
+      try {
+        const r = await fetch('/api/dirs?q=' + encodeURIComponent(q));
+        const data = await r.json();
+        this.landing.repoSuggestions = data.dirs || [];
+        this.showRepoDrop = this.landing.repoSuggestions.length > 0;
+      } catch {
+        this.showRepoDrop = false;
+      }
     },
     selectRepo(repo) {
       this.landing.repoInput = repo;
@@ -979,84 +962,235 @@ document.addEventListener('alpine:init', () => {
     },
 
     async startNewSession() {
-      // Navigate to context page with empty state — the backend starts the session
-      const slug = 'new-session-' + Date.now();
-      this.activeSession = slug;
-      this.sessions.push(slug);
-      this.saveSessionsToStorage();
-      this.state = {};
-      this.chatMessages = [];
-      this.contextContent = '';
-      this.navigate('context');
+      const repoPath = this.landing.repoInput.trim();
+      if (!repoPath) { alert('Please enter a project directory.'); return; }
+      try {
+        const r = await fetch('/api/session/new', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo_path: repoPath }),
+        });
+        const data = await r.json();
+        if (!data.ok) { alert('Failed to create session: ' + (data.error || 'unknown error')); return; }
+        const sessionId = data.session_id;
+        this.activeSession = sessionId;
+        this.sessionRepo = repoPath;
+        this.sessions.push({ id: sessionId, label: this._sessionLabel(sessionId) });
+        this.state = {};
+        this.chatMessages = [];
+        this.contextContent = '';
+        this.contextLocked = false;
+        this.navigate('context');
+        await this._startGatherer(sessionId);
+      } catch (e) {
+        alert('Error starting session: ' + e.message);
+      }
     },
 
     async resumeSession() {
-      const slug = this.landing.selectedSlug;
-      if (!slug) return;
-      await this.switchSession(slug);
+      const sessionId = this.landing.selectedSessionId;
+      if (!sessionId) return;
+      try {
+        const r = await fetch('/api/session/load', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+        const data = await r.json();
+        if (!data.ok) { alert('Failed to load session: ' + (data.error || 'unknown error')); return; }
+        const sid = data.session_id;
+        if (!this.sessions.find(s => s.id === sid)) {
+          this.sessions.push({ id: sid, label: this._sessionLabel(sid) });
+        }
+        this.activeSession = sid;
+        this.sessionRepo = data.repo_path || '';
+        this.contextContent = data.context || '';
+        if (data.has_plan) {
+          const sr = await fetch('/api/state?session_id=' + encodeURIComponent(sid));
+          this.state = await sr.json();
+          this.navigate('plan');
+        } else {
+          this.state = {};
+          this.navigate('context');
+          await this._startGatherer(sid);
+        }
+      } catch (e) {
+        alert('Error loading session: ' + e.message);
+      }
     },
 
     async abortSession() {
       if (!confirm('Abort this session? This cannot be undone.')) return;
-      // POST abort to server
+      if (!this.activeSession) return;
       try {
         await fetch(`/api/wu/abort/pivot`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'abort' }),
+          body: JSON.stringify({ action: 'abort', session_id: this.activeSession }),
         });
       } catch {}
     },
 
     // ---- Context gathering ----
+
+    async _startGatherer(sessionId) {
+      this.chatMessages = [];
+      this.gatherLoading = true;
+      try {
+        const r = await fetch('/api/gather/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+        const data = await r.json();
+        if (data.ok) {
+          this.chatMessages.push({ role: 'agent', content: data.reply });
+        } else {
+          this.chatMessages.push({ role: 'agent', content: '⚠ Could not start gatherer: ' + (data.error || 'unknown error') });
+        }
+      } catch (e) {
+        this.chatMessages.push({ role: 'agent', content: '⚠ Network error starting gatherer: ' + e.message });
+      } finally {
+        this.gatherLoading = false;
+        this.$nextTick(() => {
+          const thread = document.getElementById('chat-thread');
+          if (thread) thread.scrollTop = thread.scrollHeight;
+        });
+      }
+    },
+
     async sendChat() {
       const msg = this.chatInput.trim();
-      if (!msg) return;
+      if (!msg || this.gatherLoading) return;
       this.chatMessages.push({ role: 'user', content: msg });
       this.chatInput = '';
+      this.gatherLoading = true;
       this.$nextTick(() => {
         const thread = document.getElementById('chat-thread');
         if (thread) thread.scrollTop = thread.scrollHeight;
       });
-      // In a real implementation this would stream to the gatherer agent
+      try {
+        const r = await fetch('/api/gather/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: msg, session_id: this.activeSession }),
+        });
+        const data = await r.json();
+        if (data.ok) {
+          this.chatMessages.push({ role: 'agent', content: data.reply });
+        } else {
+          this.chatMessages.push({ role: 'agent', content: '⚠ ' + (data.error || 'unknown error') });
+        }
+      } catch (e) {
+        this.chatMessages.push({ role: 'agent', content: '⚠ Network error: ' + e.message });
+      } finally {
+        this.gatherLoading = false;
+        this.$nextTick(() => {
+          const thread = document.getElementById('chat-thread');
+          if (thread) thread.scrollTop = thread.scrollHeight;
+        });
+      }
     },
 
-    onChatInput(e) {
+    async onChatInput(e) {
       const val = this.chatInput;
       const atIdx = val.lastIndexOf('@');
-      if (atIdx >= 0 && atIdx === val.length - 1) {
-        this.atDropdown.files = ['src/', 'tests/', 'README.md'];
-        this.atDropdown.show = true;
-      } else if (atIdx >= 0) {
-        const term = val.slice(atIdx + 1).toLowerCase();
-        this.atDropdown.files = ['src/', 'tests/', 'README.md'].filter(f => f.toLowerCase().includes(term));
-        this.atDropdown.show = this.atDropdown.files.length > 0;
+      if (atIdx >= 0) {
+        const term = val.slice(atIdx + 1);
+        await this._fetchFileMatches(term);
       } else {
         this.atDropdown.show = false;
       }
     },
 
+    async _fetchFileMatches(term) {
+      const repo = this.sessionRepo || '';
+      const r = await fetch(`/api/files?repo=${encodeURIComponent(repo)}&q=${encodeURIComponent(term)}`);
+      const data = await r.json();
+      this.atDropdown.files = data.files || [];
+      this.atDropdown.show = this.atDropdown.files.length > 0;
+    },
+
     insertFileRef(f) {
       const atIdx = this.chatInput.lastIndexOf('@');
-      this.chatInput = this.chatInput.slice(0, atIdx) + '@' + f;
+      this.chatInput = this.chatInput.slice(0, atIdx) + '@' + f + ' ';
       this.atDropdown.show = false;
+      this.$nextTick(() => {
+        const ta = this.$el.querySelector('.chat-input');
+        if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = this.chatInput.length; }
+      });
+    },
+
+    async openAtPicker() {
+      await this._fetchFileMatches('');
+      this.atDropdown.show = !this.atDropdown.show;
+    },
+
+    triggerAttach() {
+      const inp = document.getElementById('attach-file-input');
+      if (inp) inp.click();
+    },
+
+    onAttachFile(e) {
+      const files = e.target.files;
+      if (!files || !files.length) return;
+      const names = Array.from(files).map(f => '@' + f.name).join(' ');
+      this.chatInput = (this.chatInput + ' ' + names).trimStart();
+      e.target.value = '';
     },
 
     renderMessage(content) {
-      // Minimal markdown: code spans
       return (content || '').replace(/`([^`]+)`/g, '<span class="chip">$1</span>');
     },
 
     async confirmContext() {
-      if (this.contextLocked) return;
-      // Signal context complete — in real impl this triggers planner
-      this.chatMessages.push({ role: 'agent', content: 'Context confirmed. Starting planner…' });
-      this.navigate('plan');
+      if (this.contextLocked || this.gatherLoading) return;
+      this.gatherLoading = true;
+      this.chatMessages.push({ role: 'agent', content: 'Finalising context…' });
+      try {
+        const doneR = await fetch('/api/gather/done', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: this.activeSession }),
+        });
+        const doneData = await doneR.json();
+        if (!doneData.ok) {
+          this.chatMessages.push({ role: 'agent', content: '⚠ Could not finalise context: ' + (doneData.error || 'unknown error') });
+          return;
+        }
+        const newSlug = doneData.slug;
+        if (newSlug && newSlug !== this.activeSession) {
+          // Update tab label and active session id
+          const tab = this.sessions.find(s => s.id === this.activeSession);
+          if (tab) { tab.id = newSlug; tab.label = this._sessionLabel(newSlug); }
+          this.activeSession = newSlug;
+        }
+        this.contextContent = doneData.context || '';
+        this.chatMessages.push({ role: 'agent', content: 'Context saved. Running planner…' });
+        const planR = await fetch('/api/plan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: this.activeSession }),
+        });
+        const planData = await planR.json();
+        if (!planData.ok) {
+          this.chatMessages.push({ role: 'agent', content: '⚠ Planner failed: ' + (planData.error || 'unknown error') });
+          return;
+        }
+        const wuList = (planData.work_units || []).join(', ');
+        this.chatMessages.push({ role: 'agent', content: `Plan ready: ${wuList}` });
+        this.navigate('plan');
+      } catch (e) {
+        this.chatMessages.push({ role: 'agent', content: '⚠ Error: ' + e.message });
+      } finally {
+        this.gatherLoading = false;
+      }
     },
 
     async reopenContext() {
       if (this.contextLocked) return;
-      this.chatMessages.push({ role: 'agent', content: 'Context gathering reopened.' });
+      this.chatMessages.push({ role: 'agent', content: 'Reopening context gathering…' });
+      await this._startGatherer(this.activeSession);
     },
 
     async saveContext() {
@@ -1065,7 +1199,7 @@ document.addEventListener('alpine:init', () => {
         await fetch('/api/context', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: this.contextContent }),
+          body: JSON.stringify({ content: this.contextContent, session_id: this.activeSession }),
         });
       } catch {}
     },
@@ -1113,11 +1247,15 @@ document.addEventListener('alpine:init', () => {
 
     async resetWU(wuId) {
       try {
-        const r = await fetch(`/api/wu/${wuId}/reset`, { method: 'POST' });
+        const r = await fetch(`/api/wu/${wuId}/reset`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: this.activeSession }),
+        });
         const data = await r.json();
         if (data.ok) {
-          const state = await (await fetch('/api/state')).json();
-          this.state = state;
+          const sr = await fetch('/api/state?session_id=' + encodeURIComponent(this.activeSession));
+          this.state = await sr.json();
         }
       } catch {}
     },
@@ -1127,8 +1265,22 @@ document.addEventListener('alpine:init', () => {
       if (!instructions) return;
       this.replanning = true;
       this.replanOpen = false;
-      // In production this would POST to a replan endpoint and stream results
-      setTimeout(() => { this.replanning = false; }, 2000);
+      try {
+        const r = await fetch('/api/reshape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instructions, session_id: this.activeSession }),
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          alert('Reshape failed: ' + (data.error || 'unknown error'));
+        }
+      } catch (e) {
+        alert('Error during reshape: ' + e.message);
+      } finally {
+        this.replanning = false;
+        this.replanInstructions = '';
+      }
     },
 
     // ---- DAG ----
@@ -1161,7 +1313,6 @@ document.addEventListener('alpine:init', () => {
       if (!wu) return;
       this.popoverWU = { id: wuId, ...wu };
 
-      // Position popover near click or at default spot
       const svgEl = document.getElementById('dag-svg');
       const rect = svgEl?.getBoundingClientRect();
       const dagCanvas = document.querySelector('.dag-canvas');
@@ -1193,7 +1344,6 @@ document.addEventListener('alpine:init', () => {
     },
 
     wuTimestamp(wu) {
-      // Would come from wu.completed_at in real impl
       return wu.completed_at ? new Date(wu.completed_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
     },
 
@@ -1246,7 +1396,6 @@ document.addEventListener('alpine:init', () => {
     // ---- Diff modal ----
     openDiff(wu, focusFile) {
       this.diffModal.wu = wu;
-      // Derive diff data from implementer_report if available
       const report = wu.implementer_report || {};
       const files = (report.files_touched || []).map(f => ({
         path: f,
@@ -1256,7 +1405,8 @@ document.addEventListener('alpine:init', () => {
         afterLines: [{ type: 'add', ln: 1, text: '/* diff output not yet available */' }],
       }));
       this.diffModal.files = files;
-      this.diffModal.activeFile = files.findIndex(f => f.path === focusFile) || 0;
+      const idx = files.findIndex(f => f.path === focusFile);
+      this.diffModal.activeFile = idx === -1 ? 0 : idx;
       this.diffModal.commitMeta = report.commit_message
         ? `commit ${report.commit_message.slice(0, 8)} · ${wu.id}`
         : `${wu.id} · no commit recorded`;
@@ -1293,8 +1443,21 @@ document.addEventListener('alpine:init', () => {
       this.reshapeModal.open = false;
       this.replanning = true;
       this.navigate('plan');
-      // In production this would POST to a replan endpoint
-      setTimeout(() => { this.replanning = false; }, 2000);
+      try {
+        const r = await fetch('/api/reshape', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instructions, session_id: this.activeSession }),
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          alert('Reshape failed: ' + (data.error || 'unknown error'));
+        }
+      } catch (e) {
+        alert('Error during reshape: ' + e.message);
+      } finally {
+        this.replanning = false;
+      }
     },
 
     async doAbortSession() {
@@ -1303,7 +1466,7 @@ document.addEventListener('alpine:init', () => {
         await fetch(`/api/wu/${wuId}/pivot`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ action: 'abort' }),
+          body: JSON.stringify({ action: 'abort', session_id: this.activeSession }),
         });
       } catch {}
       this.reshapeModal.open = false;
