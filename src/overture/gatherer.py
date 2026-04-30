@@ -23,8 +23,9 @@ import asyncio
 import os
 import readline  # noqa: F401 — enables word-navigation (Alt+Backspace, Ctrl+W) in input()
 import sys
-import textwrap
 from pathlib import Path
+
+from mcp.server.fastmcp import FastMCP
 
 from .sdk_wrapper import GathererSession
 from .session_manager import SessionManager
@@ -101,6 +102,34 @@ def _gatherer_system_prompt() -> str:
 
 
 # ---------------------------------------------------------------------------
+# MCP tool: write_context
+# ---------------------------------------------------------------------------
+
+def _make_context_mcp_server(context_path: Path) -> FastMCP:
+    """Return a FastMCP server with a single ``write_context`` tool.
+
+    The tool writes its argument to *context_path* and returns ``"OK"``.
+    Registering this as the *only* write surface for the Gatherer agent
+    ensures it cannot modify any other file in the repository.
+    """
+    mcp = FastMCP("overture-gatherer")
+
+    @mcp.tool(
+        name="write_context",
+        description=(
+            "Write the completed context document and signal that gathering is done. "
+            "Call this ONCE with the full context.md markdown as 'content'. "
+            "This is your ONLY permitted file-write action, and calling it ends the session."
+        ),
+    )
+    def write_context(content: str) -> str:  # noqa: WPS430
+        context_path.write_text(content, encoding="utf-8")
+        return "OK"
+
+    return mcp
+
+
+# ---------------------------------------------------------------------------
 # Multi-line input
 # ---------------------------------------------------------------------------
 
@@ -132,27 +161,7 @@ def _read_multiline(prompt_text: str) -> str:
 # INITIAL_PROMPT
 # ---------------------------------------------------------------------------
 
-_INITIAL_AGENT_PROMPT = textwrap.dedent("""\
-    You are the Gatherer agent for an Overture session.
-
-    Your job is to have a focused conversation with the developer to build a
-    complete, unambiguous context document that will be handed off to the
-    Planner.
-
-    Start by asking:
-    1. What is the goal of this task? (one sentence)
-    2. What is the current state of the codebase / environment?
-    3. Are there any known constraints, blockers, or things to avoid?
-    4. What does "done" look like? (Acceptance criteria in plain English)
-
-    Ask follow-up questions until you feel confident you can write a
-    complete context.md.  When you are satisfied, tell the developer to type
-    /done to finalise the session.  If they want to stop early they can type
-    /abort.
-
-    Keep your questions short and clear.  One or two questions per turn.
-    Do not write context.md yet — just gather information conversationally.
-""")
+_INITIAL_AGENT_PROMPT = "Begin the context gathering session."
 
 
 # ---------------------------------------------------------------------------
@@ -176,13 +185,19 @@ async def run_gather(session_manager: SessionManager, target_repo: Path) -> bool
 
     _print_status(session_id, turn, "gathering")
 
-    # Accumulate the conversation as plain text so we can write context.md
     transcript: list[dict[str, str]] = []
 
-    async with GathererSession(system_prompt=system_prompt, cwd=target_repo) as session:
+    context_path = session_manager.context_path()
+    mcp_server = _make_context_mcp_server(context_path)
+
+    async with GathererSession(
+        system_prompt=system_prompt,
+        cwd=target_repo,
+        mcp_server=mcp_server,
+    ) as session:
         # Kick off the agent with the initial instruction
         _clear_status()
-        reply = await session.send(_INITIAL_AGENT_PROMPT)
+        reply, _thinking = await session.send(_INITIAL_AGENT_PROMPT)
         turn += 1
         _print_assistant(reply)
         _print_status(session_id, turn, "gathering")
@@ -201,13 +216,13 @@ async def run_gather(session_manager: SessionManager, target_repo: Path) -> bool
                 return False
 
             if cmd == "/done":
-                # Ask the agent to write the final context.md
                 _clear_status()
                 print(f"\n{_DIM}Generating context.md…{_RESET}")
-                context_reply = await session.send(
+                await session.send(
                     "The developer has signalled they are done providing context.  "
-                    "Now write the complete context.md document.  "
-                    "Format it with: ## Goal, ## Current State, ## Constraints, "
+                    "Now compose the complete context.md document and call `write_context` "
+                    "with the full markdown as its argument.  "
+                    "Format the document with: ## Goal, ## Current State, ## Constraints, "
                     "## Acceptance Criteria, and ## Notes sections.  "
                     "\n\n"
                     "IMPORTANT: The first line after ## Goal will be used as the session name. "
@@ -215,9 +230,12 @@ async def run_gather(session_manager: SessionManager, target_repo: Path) -> bool
                     "Examples: 'Implement user auth', 'Fix search performance', 'Add dark mode toggle'. "
                     "Avoid complete sentences or complex grammar. "
                     "\n\n"
-                    "Output ONLY the markdown, no extra commentary."
+                    "Call `write_context` once with the complete markdown — do NOT output the "
+                    "markdown as plain text.  Calling `write_context` is your final action."
                 )
-                session_manager.write_context(context_reply)
+
+                # The agent wrote the file via the MCP tool; read it back.
+                context_reply = context_path.read_text(encoding="utf-8")
 
                 # Derive a slug from the goal line in context.md
                 slug = _extract_slug(context_reply) or session_id
@@ -228,7 +246,7 @@ async def run_gather(session_manager: SessionManager, target_repo: Path) -> bool
 
             transcript.append({"role": "user", "content": user_input})
             _clear_status()
-            reply = await session.send(user_input)
+            reply, _thinking = await session.send(user_input)
             turn += 1
             _print_assistant(reply)
             _print_status(session_manager.session_id, turn, "gathering")
@@ -269,19 +287,44 @@ def _extract_slug(context_md: str) -> str:
 # Web-mode gatherer (driven by HTTP rather than terminal input)
 # ---------------------------------------------------------------------------
 
+_DONE_PROMPT = (
+    "The developer has signalled they are done providing context.  "
+    "Now compose the complete context.md document and call `write_context` "
+    "with the full markdown as its argument.  "
+    "Format the document with: ## Goal, ## Current State, ## Constraints, "
+    "## Acceptance Criteria, and ## Notes sections.  "
+    "\n\n"
+    "IMPORTANT: The first line after ## Goal will be used as the session name. "
+    "It must be 2–5 words, terse, and suitable for browser tabs, directory names, and logs. "
+    "Examples: 'Implement user auth', 'Fix search performance', 'Add dark mode toggle'. "
+    "Avoid complete sentences or complex grammar. "
+    "\n\n"
+    "Call `write_context` once with the complete markdown — do NOT output the "
+    "markdown as plain text.  Calling `write_context` is your final action."
+)
+
+_REOPEN_PROMPT = (
+    "The user wishes to continue context gathering with you.  "
+    "Resume the conversation naturally — ask if there is additional context, "
+    "corrections, or new requirements they'd like to capture before they signal "
+    "done again."
+)
+
+
 class WebGathererSession:
     """A persistent gatherer conversation that lives across HTTP requests.
 
-    Lifecycle::
+    Streaming lifecycle::
 
         wgs = WebGathererSession(session_manager, target_repo)
-        opening_message = await wgs.start()   # kick off the agent
-        reply = await wgs.send("user text")   # one turn
-        slug  = await wgs.done()              # finalise → writes context.md
-        await wgs.close()                     # cleanup
+        async for kind, chunk in wgs.stream_start():   # open + first agent turn
+            ...  # kind in ("thinking", "text", "done")
+        async for kind, chunk in wgs.stream_send("user text"):
+            ...
+        slug = await wgs.finalise()   # ask agent to call write_context, rename session
+        await wgs.close()
 
-    The caller is responsible for calling close() (or using the async context
-    manager) when the session is no longer needed.
+    The caller is responsible for calling close() when done.
     """
 
     def __init__(self, session_manager: SessionManager, target_repo: Path) -> None:
@@ -289,6 +332,7 @@ class WebGathererSession:
         self._target_repo = target_repo
         self._system_prompt = _gatherer_system_prompt()
         self._session: GathererSession | None = None
+        self._context_path = session_manager.context_path()
 
     async def __aenter__(self) -> "WebGathererSession":
         return self
@@ -296,47 +340,43 @@ class WebGathererSession:
     async def __aexit__(self, *_: object) -> None:
         await self.close()
 
-    async def start(self) -> str:
-        """Open the SDK session and return the first agent message."""
+    def _ensure_session(self) -> GathererSession:
+        if self._session is None:
+            raise RuntimeError("WebGathererSession not started — call stream_start() first")
+        return self._session
+
+    async def _open_session(self) -> None:
+        mcp_server = _make_context_mcp_server(self._context_path)
         self._session = GathererSession(
             system_prompt=self._system_prompt,
             cwd=self._target_repo,
+            mcp_server=mcp_server,
         )
         await self._session.__aenter__()
-        reply = await self._session.send(_INITIAL_AGENT_PROMPT)
-        return reply
 
-    async def send(self, user_text: str) -> str:
-        """Send one user turn and return the agent reply."""
-        if self._session is None:
-            raise RuntimeError("WebGathererSession not started — call start() first")
-        return await self._session.send(user_text)
+    async def stream_start(self):  # type: ignore[return]
+        """Open the SDK session and stream the opening agent turn."""
+        await self._open_session()
+        async for event in self._session.stream(_INITIAL_AGENT_PROMPT):  # type: ignore[union-attr]
+            yield event
 
-    async def done(self) -> str:
-        """Finalise: ask the agent to write context.md, persist it, rename session.
+    async def stream_send(self, user_text: str):  # type: ignore[return]
+        """Stream one user turn."""
+        sess = self._ensure_session()
+        async for event in sess.stream(user_text):
+            yield event
 
-        Returns the final session slug.
-        """
-        if self._session is None:
-            raise RuntimeError("WebGathererSession not started — call start() first")
+    async def stream_done(self):  # type: ignore[return]
+        """Ask the agent to finalise (call write_context) and stream its response."""
+        sess = self._ensure_session()
+        async for event in sess.stream(_DONE_PROMPT):
+            yield event
 
-        context_reply = await self._session.send(
-            "The developer has signalled they are done providing context.  "
-            "Now write the complete context.md document.  "
-            "Format it with: ## Goal, ## Current State, ## Constraints, "
-            "## Acceptance Criteria, and ## Notes sections.  "
-            "\n\n"
-            "IMPORTANT: The first line after ## Goal will be used as the session name. "
-            "It must be 2–5 words, terse, and suitable for browser tabs, directory names, and logs. "
-            "Examples: 'Implement user auth', 'Fix search performance', 'Add dark mode toggle'. "
-            "Avoid complete sentences or complex grammar. "
-            "\n\n"
-            "Output ONLY the markdown, no extra commentary."
-        )
-        self._sm.write_context(context_reply)
+    async def finalise(self) -> str:
+        """Read the written context file and rename the session.  Returns new slug."""
+        context_reply = self._context_path.read_text(encoding="utf-8")
         slug = _extract_slug(context_reply) or self._sm.session_id
-        final_slug = self._sm.rename_to_slug(slug)
-        return final_slug
+        return self._sm.rename_to_slug(slug)
 
     async def close(self) -> None:
         """Tear down the underlying SDK session."""

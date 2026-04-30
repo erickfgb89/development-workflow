@@ -1,7 +1,7 @@
 """FastAPI web server for the Overture dashboard.
 
 Serves the SPA, exposes a REST state endpoint, and pushes state updates via
-WebSocket whenever state.json changes.
+SSE whenever state.json changes.
 
 Two entry points:
 
@@ -34,23 +34,34 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Module-level asyncio.Queue; orchestrator puts() state snapshots here and the
-# WebSocket broadcaster pops them to push to all connected clients.
-_state_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+# SSE subscriber registry: session_id → list of asyncio.Queue.
+# Each open /api/events stream has one queue; notify_state_change enqueues into
+# all queues whose session_id matches (or all queues when session_id is "").
+# session_id="" is used in non-standalone (coupled) mode where there is only one session.
+_sse_subscribers: dict[str, list[asyncio.Queue[str]]] = {}
 
 # Event that is set when a pivot response arrives via POST /api/wu/.../pivot.
 pivot_event: asyncio.Event = asyncio.Event()
 
 
-def notify_state_change(state: dict[str, Any]) -> None:
-    """Called by SessionManager (or any writer) after writing state.json.
+def notify_state_change(state: dict[str, Any], session_id: str = "") -> None:
+    """Push a state snapshot to all open SSE streams.
 
-    Non-blocking — puts the snapshot onto the broadcast queue.
+    Called by SessionManager after writing state.json.  Non-blocking.
+    session_id="" broadcasts to every open stream (coupled / non-standalone mode).
     """
-    try:
-        _state_queue.put_nowait(state)
-    except asyncio.QueueFull:
-        pass
+    payload = json.dumps({"session_id": session_id, "state": state})
+    targets = (
+        # coupled mode: push to every open stream regardless of session
+        [q for qs in _sse_subscribers.values() for q in qs]
+        if not session_id
+        else _sse_subscribers.get(session_id, [])
+    )
+    for q in targets:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            pass
 
 
 def _build_app(sm: Any, *, standalone: bool = False, data_dir: Path | None = None) -> Any:
@@ -60,7 +71,7 @@ def _build_app(sm: Any, *, standalone: bool = False, data_dir: Path | None = Non
     --web-server mode.  data_dir is the central sessions store used in that
     mode; sm is unused when standalone=True.
     """
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI
     from fastapi.responses import HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
 
@@ -433,8 +444,10 @@ def _build_app(sm: Any, *, standalone: bool = False, data_dir: Path | None = Non
                 sess_sm = SessionManager.for_web(data_dir, repo_path)
                 session_id = sess_sm.session_id
                 _registry[session_id] = sess_sm
+                logger.info("session=new id=%s repo=%s", session_id, repo_path_str)
                 return JSONResponse({"session_id": session_id, "ok": True})
             except Exception as exc:
+                logger.exception("session/new failed repo=%s", repo_path_str)
                 return JSONResponse({"error": str(exc)}, status_code=500)
 
         @app.post("/api/session/load")
@@ -445,89 +458,192 @@ def _build_app(sm: Any, *, standalone: bool = False, data_dir: Path | None = Non
                 return JSONResponse({"error": "session_id required"}, status_code=400)
             sess_sm = _get_sm(session_id)
             if sess_sm is None:
+                logger.warning("session=load id=%s not_found", session_id)
                 return JSONResponse({"error": f"Session '{session_id}' not found"}, status_code=404)
             try:
                 try:
                     ctx = sess_sm.read_context()
+                    has_context = True
                 except FileNotFoundError:
                     ctx = ""
+                    has_context = False
                 try:
                     state = sess_sm.read_state()
                 except FileNotFoundError:
                     state = {}
+                has_plan = bool(state)
+                logger.info(
+                    "session=load id=%s has_context=%s has_plan=%s",
+                    sess_sm.session_id, has_context, has_plan,
+                )
                 return JSONResponse({
                     "session_id": sess_sm.session_id,
                     "repo_path": str(sess_sm.target_repo),
                     "context": ctx,
-                    "has_plan": bool(state),
+                    "has_plan": has_plan,
                     "ok": True,
                 })
             except Exception as exc:
+                logger.exception("session/load failed id=%s", session_id)
                 return JSONResponse({"error": str(exc)}, status_code=500)
+
+        def _sse_stream(gen):  # type: ignore[return]
+            """Wrap an async generator of (kind, chunk) into SSE text lines.
+
+            Protocol (newline-delimited JSON, each line is one SSE ``data:`` field):
+              {"t":"thinking","c":"<text>"}   — thinking block chunk
+              {"t":"text","c":"<text>"}       — assistant text chunk
+              {"t":"done","slug":"<slug>","context":"<md>"}  — stream finished
+              {"t":"system","c":"<text>"}     — system notification
+              {"t":"error","c":"<msg>"}       — error
+            """
+            import json as _json
+            from fastapi.responses import StreamingResponse
+
+            async def _iter():
+                try:
+                    async for kind, chunk in gen:
+                        if kind == "done":
+                            # done sentinel — caller sends the real done event separately
+                            return
+                        yield f"data: {_json.dumps({'t': kind, 'c': chunk})}\n\n"
+                except Exception as exc:
+                    yield f"data: {_json.dumps({'t': 'error', 'c': str(exc)})}\n\n"
+
+            return StreamingResponse(_iter(), media_type="text/event-stream")
 
         @app.post("/api/gather/start")
-        async def gather_start(body: dict[str, Any]) -> JSONResponse:
-            """Open the gatherer agent and return its opening message."""
+        async def gather_start(body: dict[str, Any]):
+            """Open the gatherer agent and stream its opening turn as SSE."""
             session_id = body.get("session_id", "")
+            reopen = body.get("reopen", False)
             sess_sm = _get_sm(session_id)
             if sess_sm is None:
+                logger.warning("gather/start session=unknown id=%s not_found", session_id)
                 return JSONResponse({"error": "session not found"}, status_code=404)
-            try:
-                from ..gatherer import WebGathererSession
-                old = _gather_sessions.pop(session_id, None)
-                if old is not None:
-                    await old.close()
-                wgs = WebGathererSession(sess_sm, sess_sm.target_repo)
-                opening = await wgs.start()
-                _gather_sessions[session_id] = wgs
-                return JSONResponse({"reply": opening, "ok": True})
-            except Exception as exc:
-                logger.exception("gather/start failed")
-                return JSONResponse({"error": str(exc)}, status_code=500)
+            from ..gatherer import WebGathererSession, _REOPEN_PROMPT
+            import json as _json
+            from fastapi.responses import StreamingResponse
+
+            logger.info("gather/start session=%s reopen=%s", session_id, reopen)
+            old = _gather_sessions.pop(session_id, None)
+            if old is not None:
+                logger.info("gather/start session=%s closing_previous_gatherer", session_id)
+                await old.close()
+            wgs = WebGathererSession(sess_sm, sess_sm.target_repo)
+
+            async def _iter():
+                try:
+                    if reopen:
+                        logger.info("gather/start session=%s streaming_reopen", session_id)
+                        async for kind, chunk in wgs.stream_start():
+                            if kind == "done":
+                                break
+                            yield f"data: {_json.dumps({'t': kind, 'c': chunk})}\n\n"
+                        yield f"data: {_json.dumps({'t': 'msg_start', 'c': ''})}\n\n"
+                        async for kind, chunk in wgs.stream_send(_REOPEN_PROMPT):
+                            if kind == "done":
+                                break
+                            yield f"data: {_json.dumps({'t': kind, 'c': chunk})}\n\n"
+                    else:
+                        logger.info("gather/start session=%s streaming_initial_turn", session_id)
+                        async for kind, chunk in wgs.stream_start():
+                            if kind == "done":
+                                break
+                            yield f"data: {_json.dumps({'t': kind, 'c': chunk})}\n\n"
+                    _gather_sessions[session_id] = wgs
+                    logger.info("gather/start session=%s complete registered_in_gather_sessions", session_id)
+                    yield f"data: {_json.dumps({'t': 'done'})}\n\n"
+                except Exception as exc:
+                    logger.exception("gather/start session=%s streaming_failed", session_id)
+                    yield f"data: {_json.dumps({'t': 'error', 'c': str(exc)})}\n\n"
+
+            return StreamingResponse(_iter(), media_type="text/event-stream")
 
         @app.post("/api/gather/send")
-        async def gather_send(body: dict[str, Any]) -> JSONResponse:
-            """Send one user message to the gatherer and return the agent reply."""
+        async def gather_send(body: dict[str, Any]):
+            """Stream one user→agent turn as SSE."""
+            import json as _json
+            from fastapi.responses import StreamingResponse
+
             session_id = body.get("session_id", "")
             message = body.get("message", "").strip()
             if not message:
                 return JSONResponse({"error": "message required"}, status_code=400)
             wgs = _gather_sessions.get(session_id)
             if wgs is None:
+                logger.warning("gather/send session=%s no_active_gather_session", session_id)
                 return JSONResponse(
                     {"error": "No active gather session — call /api/gather/start first"},
                     status_code=400,
                 )
-            try:
-                reply = await wgs.send(message)
-                return JSONResponse({"reply": reply, "ok": True})
-            except Exception as exc:
-                logger.exception("gather/send failed")
-                return JSONResponse({"error": str(exc)}, status_code=500)
+
+            logger.info("gather/send session=%s msg_len=%d", session_id, len(message))
+
+            async def _iter():
+                try:
+                    async for kind, chunk in wgs.stream_send(message):
+                        if kind == "done":
+                            break
+                        yield f"data: {_json.dumps({'t': kind, 'c': chunk})}\n\n"
+                    logger.info("gather/send session=%s complete", session_id)
+                    yield f"data: {_json.dumps({'t': 'done'})}\n\n"
+                except Exception as exc:
+                    logger.exception("gather/send session=%s streaming_failed", session_id)
+                    yield f"data: {_json.dumps({'t': 'error', 'c': str(exc)})}\n\n"
+
+            return StreamingResponse(_iter(), media_type="text/event-stream")
 
         @app.post("/api/gather/done")
-        async def gather_done(body: dict[str, Any]) -> JSONResponse:
-            """Finalise gathering: agent writes context.md and session is renamed."""
+        async def gather_done(body: dict[str, Any]):
+            """Finalise: agent calls write_context, session is renamed. Streams SSE."""
+            import json as _json
+            from fastapi.responses import StreamingResponse
+
             session_id = body.get("session_id", "")
             sess_sm = _get_sm(session_id)
             if sess_sm is None:
+                logger.warning("gather/done session=unknown id=%s not_found", session_id)
                 return JSONResponse({"error": "session not found"}, status_code=404)
-            wgs = _gather_sessions.pop(session_id, None)
+            wgs = _gather_sessions.get(session_id)
             if wgs is None:
+                logger.warning("gather/done session=%s no_active_gather_session", session_id)
                 return JSONResponse({"error": "No active gather session"}, status_code=400)
-            try:
-                new_slug = await wgs.done()
-                await wgs.close()
-                # The SM was renamed; update registry under the new slug too
-                _registry[new_slug] = sess_sm
+
+            logger.info("gather/done session=%s starting_finalisation", session_id)
+
+            async def _iter():
                 try:
-                    ctx = sess_sm.read_context()
-                except FileNotFoundError:
-                    ctx = ""
-                return JSONResponse({"slug": new_slug, "context": ctx, "ok": True})
-            except Exception as exc:
-                logger.exception("gather/done failed")
-                return JSONResponse({"error": str(exc)}, status_code=500)
+                    logger.info("gather/done session=%s streaming_done_prompt", session_id)
+                    async for kind, chunk in wgs.stream_done():
+                        if kind == "done":
+                            break
+                        yield f"data: {_json.dumps({'t': kind, 'c': chunk})}\n\n"
+                    context_exists = wgs._context_path.exists()
+                    logger.info(
+                        "gather/done session=%s done_prompt_complete context_file_exists=%s",
+                        session_id, context_exists,
+                    )
+                    new_slug = await wgs.finalise()
+                    await wgs.close()
+                    _gather_sessions.pop(session_id, None)
+                    _registry[new_slug] = sess_sm
+                    try:
+                        ctx = sess_sm.read_context()
+                        ctx_len = len(ctx)
+                    except FileNotFoundError:
+                        ctx = ""
+                        ctx_len = 0
+                    logger.info(
+                        "gather/done session=%s finalised new_slug=%s context_len=%d",
+                        session_id, new_slug, ctx_len,
+                    )
+                    yield f"data: {_json.dumps({'t': 'finalised', 'slug': new_slug, 'context': ctx})}\n\n"
+                except Exception as exc:
+                    logger.exception("gather/done session=%s streaming_failed", session_id)
+                    yield f"data: {_json.dumps({'t': 'error', 'c': str(exc)})}\n\n"
+
+            return StreamingResponse(_iter(), media_type="text/event-stream")
 
         @app.post("/api/plan")
         async def run_plan_endpoint(body: dict[str, Any]) -> JSONResponse:
@@ -535,14 +651,17 @@ def _build_app(sm: Any, *, standalone: bool = False, data_dir: Path | None = Non
             session_id = body.get("session_id", "")
             sess_sm = _get_sm(session_id)
             if sess_sm is None:
+                logger.warning("plan session=unknown id=%s not_found", session_id)
                 return JSONResponse({"error": "session not found"}, status_code=404)
+            logger.info("plan session=%s starting_planner", session_id)
             try:
                 from ..planner import run_plan
                 dag = await run_plan(sess_sm, sess_sm.target_repo, verbose=False)
                 wu_ids = [wu["id"] for wu in dag["work_units"]]
+                logger.info("plan session=%s complete wu_count=%d wus=%s", session_id, len(wu_ids), wu_ids)
                 return JSONResponse({"work_units": wu_ids, "ok": True})
             except Exception as exc:
-                logger.exception("plan endpoint failed")
+                logger.exception("plan session=%s failed", session_id)
                 return JSONResponse({"error": str(exc)}, status_code=500)
 
         @app.post("/api/reshape")
@@ -584,50 +703,126 @@ def _build_app(sm: Any, *, standalone: bool = False, data_dir: Path | None = Non
                 logger.exception("reshape endpoint failed")
                 return JSONResponse({"error": str(exc)}, status_code=500)
 
-    # ------------------------------------------------------------------ WS
-    connected_clients: list[WebSocket] = []
+        # Track running execution tasks per session so we can avoid double-starts.
+        _exec_tasks: dict[str, "asyncio.Task[None]"] = {}
 
-    @app.websocket("/ws/state")
-    async def ws_state(websocket: WebSocket) -> None:
-        await websocket.accept()
-        connected_clients.append(websocket)
-        # In standalone mode we don't push an initial state — the UI requests
-        # per-session state explicitly.  In coupled mode push current state.
+        @app.post("/api/execute")
+        async def execute_endpoint(body: dict[str, Any]) -> JSONResponse:
+            """Start (or no-op if already running) the batch execution loop for a session.
+
+            Returns immediately; the loop runs as a background asyncio task and
+            pushes state updates via SSE as each WU completes.
+            """
+            session_id = body.get("session_id", "")
+            sess_sm = _get_sm(session_id)
+            if sess_sm is None:
+                return JSONResponse({"error": "session not found"}, status_code=404)
+
+            existing = _exec_tasks.get(session_id)
+            if existing and not existing.done():
+                return JSONResponse({"ok": True, "status": "already_running"})
+
+            async def _run_loop() -> None:
+                from ..batch_manager import run_batch
+                from ..planner import get_ready_wus
+                logger.info("execute session=%s loop_start", session_id)
+                try:
+                    while True:
+                        state = sess_sm.read_state()
+                        wus = state.get("work_units", {})
+
+                        pivot_wus = [wid for wid, w in wus.items() if w.get("needs_user_pivot")]
+                        if pivot_wus:
+                            logger.info("execute session=%s pivot_needed wus=%s", session_id, pivot_wus)
+                            break
+
+                        statuses = [w["status"] for w in wus.values()]
+                        if all(s == "completed" for s in statuses):
+                            logger.info("execute session=%s all_completed", session_id)
+                            break
+                        if statuses and all(s in ("completed", "failed", "blocked") for s in statuses):
+                            logger.info("execute session=%s ended_with_failures", session_id)
+                            break
+
+                        ready = get_ready_wus(state)
+                        if not ready:
+                            logger.info("execute session=%s no_ready_wus deadlock", session_id)
+                            break
+
+                        summary = await run_batch(sess_sm, sess_sm.target_repo, verbose=False)
+                        logger.info("execute session=%s batch_done summary=%s", session_id, summary)
+                        if summary.get("ready", 0) == 0:
+                            break
+                except Exception:
+                    logger.exception("execute session=%s loop_error", session_id)
+                finally:
+                    _exec_tasks.pop(session_id, None)
+
+            task = asyncio.create_task(_run_loop())
+            _exec_tasks[session_id] = task
+            logger.info("execute session=%s task_created", session_id)
+            return JSONResponse({"ok": True, "status": "started"})
+
+    # ------------------------------------------------------------------ SSE state stream
+    @app.get("/api/events")
+    async def sse_events(session_id: str = "") -> Any:
+        """Persistent SSE stream that pushes state snapshots to the browser.
+
+        The client subscribes with ?session_id=<id>.  The server pushes a JSON
+        object {"session_id": ..., "state": ...} whenever state.json changes for
+        that session.  In coupled (non-standalone) mode session_id may be omitted.
+
+        On connect, the current state is sent immediately so the browser doesn't
+        have to poll separately.
+        """
+        import json as _json
+        from fastapi.responses import StreamingResponse
+
+        q: asyncio.Queue[str] = asyncio.Queue(maxsize=64)
+        key = session_id or ""
+        _sse_subscribers.setdefault(key, []).append(q)
+        logger.info("sse/events session=%s subscriber_count=%d", key or "coupled",
+                    len(_sse_subscribers.get(key, [])))
+
+        # Send current state immediately on connect.
         if not standalone:
             try:
-                state = sm.read_state()
-                await websocket.send_text(json.dumps(state))
+                initial = sm.read_state()
             except FileNotFoundError:
-                await websocket.send_text(json.dumps({}))
-            except Exception:
-                pass
-        try:
-            while True:
-                await websocket.receive_text()
-        except WebSocketDisconnect:
-            try:
-                connected_clients.remove(websocket)
-            except ValueError:
-                pass
+                initial = {}
+            await q.put(_json.dumps({"session_id": "", "state": initial}))
+        elif session_id:
+            sess_sm = _get_sm(session_id)  # type: ignore[name-defined]
+            if sess_sm is not None:
+                try:
+                    initial = sess_sm.read_state()
+                except FileNotFoundError:
+                    initial = {}
+                await q.put(_json.dumps({"session_id": session_id, "state": initial}))
 
-    async def broadcaster() -> None:
-        """Drain _state_queue and push snapshots to all connected WS clients."""
-        while True:
-            state = await _state_queue.get()
-            payload = json.dumps(state)
-            dead: list[WebSocket] = []
-            for ws in list(connected_clients):
+        async def _stream():
+            try:
+                while True:
+                    payload = await q.get()
+                    yield f"data: {payload}\n\n"
+            except asyncio.CancelledError:
+                pass
+            finally:
+                subs = _sse_subscribers.get(key, [])
                 try:
-                    await ws.send_text(payload)
-                except Exception:
-                    dead.append(ws)
-            for ws in dead:
-                try:
-                    connected_clients.remove(ws)
+                    subs.remove(q)
                 except ValueError:
                     pass
+                if not subs:
+                    _sse_subscribers.pop(key, None)
+                logger.info("sse/events session=%s disconnected remaining=%d",
+                            key or "coupled", len(_sse_subscribers.get(key, [])))
 
-    app.state.broadcaster = broadcaster
+        return StreamingResponse(
+            _stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     # ------------------------------------------------------------------ SPA
     @app.get("/", response_class=HTMLResponse)
@@ -745,11 +940,7 @@ async def start_ui_server(sm: Any, port: int = 7337) -> None:
     server = uvicorn.Server(config)
 
     print(f"  Dashboard: http://localhost:{port}")
-
-    await asyncio.gather(
-        server.serve(),
-        app.state.broadcaster(),
-    )
+    await server.serve()
 
 
 async def start_ui_server_standalone(data_dir: Path, port: int = 7337) -> None:
@@ -776,7 +967,4 @@ async def start_ui_server_standalone(data_dir: Path, port: int = 7337) -> None:
     print(f"  Session store: {data_dir}")
     print("  Session lifecycle is driven from the browser.")
 
-    await asyncio.gather(
-        server.serve(),
-        app.state.broadcaster(),
-    )
+    await server.serve()

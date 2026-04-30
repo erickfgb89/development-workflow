@@ -146,8 +146,12 @@ class SessionManager:
     # File helpers
     # ------------------------------------------------------------------
 
+    def context_path(self) -> Path:
+        """Return the path where context.md will be written (may not exist yet)."""
+        return self._require_dir() / "context.md"
+
     def write_context(self, content: str) -> Path:
-        path = self._require_dir() / "context.md"
+        path = self.context_path()
         path.write_text(content, encoding="utf-8")
         return path
 
@@ -179,7 +183,7 @@ class SessionManager:
         # Notify web UI broadcaster if it's running
         try:
             from .web_ui.server import notify_state_change
-            notify_state_change(state)
+            notify_state_change(state, session_id=self.session_id)
         except Exception:
             pass
         return path

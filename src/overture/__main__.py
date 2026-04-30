@@ -70,13 +70,42 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _configure_logging(verbose: bool) -> None:
+    """Set up root logger: always write INFO+ to a rotating file, optionally to stderr."""
+    import os
+    from logging.handlers import RotatingFileHandler
+
+    log_dir = Path(os.path.expanduser("~/.overture"))
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "overture.log"
+
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+
+    file_handler = RotatingFileHandler(
+        log_path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setLevel(logging.DEBUG if verbose else logging.INFO)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-8s %(name)s  %(message)s")
+    )
+    root.addHandler(file_handler)
+
+    stderr_handler = logging.StreamHandler(sys.stderr)
+    stderr_handler.setLevel(logging.DEBUG if verbose else logging.WARNING)
+    stderr_handler.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    root.addHandler(stderr_handler)
+
+    # Quiet noisy third-party loggers that would flood the file.
+    for noisy in ("httpx", "httpcore", "uvicorn.access", "asyncio"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    logging.getLogger(__name__).info("Logging to %s", log_path)
+
+
 def main() -> None:
     args = _parse_args()
-
-    if args.verbose:
-        logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    else:
-        logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+    _configure_logging(args.verbose)
 
     target_repo = Path(args.target).resolve()
     if not target_repo.is_dir():

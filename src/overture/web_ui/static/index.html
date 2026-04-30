@@ -12,7 +12,7 @@
 
 <div id="app" x-data="app()" x-init="init()">
 
-  <!-- WebSocket reconnection banner -->
+  <!-- SSE reconnection banner -->
   <div class="ws-banner" :class="wsStatus === 'disconnected' ? 'disconnected' : 'hidden'">
     Connection lost — retrying…
   </div>
@@ -43,7 +43,7 @@
     <!-- Connection indicator -->
     <div class="conn-indicator">
       <span class="conn-dot" :class="wsStatus"></span>
-      <span x-show="wsStatus === 'connected'">live · ws</span>
+      <span x-show="wsStatus === 'connected'">live · sse</span>
       <span x-show="wsStatus === 'reconnecting'">reconnecting…</span>
       <span x-show="wsStatus === 'disconnected'">disconnected</span>
     </div>
@@ -199,8 +199,28 @@
                 <span style="color:var(--text-2);font-size:13px;">Start a new session or resume one to begin.</span>
               </div>
               <template x-for="(msg, i) in chatMessages" :key="i">
-                <div class="bubble" :class="msg.role === 'user' ? 'user' : 'agent'"
-                  x-html="renderMessage(msg.content)">
+                <div class="bubble" :class="msg.role === 'system' ? 'system' : (msg.role === 'user' ? 'user' : 'agent')">
+                  <!-- System bubble: just render markdown -->
+                  <template x-if="msg.role === 'system'">
+                    <div x-html="renderMessage(msg.content)"></div>
+                  </template>
+                  <!-- User / agent bubble -->
+                  <template x-if="msg.role !== 'system'">
+                    <div>
+                      <!-- Collapsible thinking block (agent only) -->
+                      <div x-show="msg.role === 'agent' && msg.thinking" class="thinking-wrap">
+                        <button class="thinking-toggle" @click="msg._open = !msg._open">
+                          <span class="thinking-chevron" :class="msg._open ? 'open' : ''">›</span>
+                          <span x-text="msg._open ? 'Hide thinking' : (msg._streaming ? 'Thinking…' : 'Show thinking')"></span>
+                        </button>
+                        <div class="thinking-body" x-show="msg._open" x-html="renderMessage(msg.thinking || '')"></div>
+                      </div>
+                      <!-- Message text — show streaming cursor while arriving -->
+                      <div x-html="renderMessage(msg.content) + (msg._streaming && !msg.thinking ? '<span class=\'streaming-cursor\'></span>' : '')"></div>
+                      <!-- Streaming indicator when thinking is active but no text yet -->
+                      <div x-show="msg._streaming && !msg.content && msg.thinking" class="streaming-label">working…</div>
+                    </div>
+                  </template>
                 </div>
               </template>
             </div>
@@ -231,7 +251,8 @@
                 <button class="btn sm" @click="sendChat()" :disabled="gatherLoading">Send</button>
               </div>
               <div class="composer-row confirm-row">
-                <button class="btn primary" @click="confirmContext()" :disabled="contextLocked || gatherLoading">
+                <button :class="['btn', gatherReadyToFinish ? 'primary ready-to-finish' : 'ghost finish-idle']"
+                  @click="confirmContext()" :disabled="contextLocked || gatherLoading">
                   ✓ Context complete — start planning
                 </button>
                 <button class="btn ghost sm" @click="reopenContext()"
@@ -293,6 +314,9 @@
                 <button class="btn ghost sm" @click="toggleAllWuCards()"
                   x-text="sortedWUs().every(w => expandedWUs[w.id] !== false) ? '↑ collapse all' : '↓ expand all'"></button>
                 <button class="btn sm" @click="replanOpen = !replanOpen">↻ Re-plan</button>
+                <button class="btn primary sm" @click="startExecution()"
+                  :disabled="executing"
+                  x-text="executing ? 'Running…' : '▶ Run'"></button>
               </div>
             </div>
 
@@ -743,6 +767,7 @@
 <!-- D3 and DAG renderer must load before Alpine so dag.js is available -->
 <script src="/static/d3.min.js"></script>
 <script src="/static/dag.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
 <script>
 /* Alpine app definition must be registered BEFORE alpine.min.js is loaded
@@ -754,6 +779,7 @@ document.addEventListener('alpine:init', () => {
   Alpine.data('app', () => ({
 
     // ---- State ----
+    _sse: null,
     wsStatus: 'disconnected',
     sidebarCollapsed: false,
     currentPage: 'landing',
@@ -779,6 +805,7 @@ document.addEventListener('alpine:init', () => {
     chatMessages: [],
     chatInput: '',
     gatherLoading: false,
+    gatherReadyToFinish: false,
     ctxEditorVisible: true,
     contextContent: '',
     contextLocked: false,
@@ -791,6 +818,7 @@ document.addEventListener('alpine:init', () => {
     replanOpen: false,
     replanInstructions: '',
     replanning: false,
+    executing: false,
 
     // DAG
     dagFilter: 'all',
@@ -823,7 +851,8 @@ document.addEventListener('alpine:init', () => {
 
     // ---- Init ----
     async init() {
-      this.connectWS();
+      this.connectSSE();
+      this.fetchExistingSessions();
 
       // DAG popover
       document.addEventListener('wu-select', (e) => this.onDagNodeClick(e.detail.wu_id));
@@ -838,27 +867,37 @@ document.addEventListener('alpine:init', () => {
       });
     },
 
-    // ---- WebSocket ----
-    connectWS() {
-      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const ws = new WebSocket(`${proto}://${location.host}/ws/state`);
-      this._ws = ws;
+    // ---- SSE state stream ----
+    connectSSE() {
+      // Close any existing stream before reconnecting.
+      if (this._sse) { this._sse.close(); this._sse = null; }
 
-      ws.onopen = () => {
+      const sessionParam = this.activeSession
+        ? `?session_id=${encodeURIComponent(this.activeSession)}`
+        : '';
+      const es = new EventSource(`/api/events${sessionParam}`);
+      this._sse = es;
+
+      es.onopen = () => {
         this.wsStatus = 'connected';
       };
-      ws.onmessage = (ev) => {
+      es.onmessage = (ev) => {
         try {
-          const newState = JSON.parse(ev.data);
-          this.onStateUpdate(newState);
+          const msg = JSON.parse(ev.data);
+          // Server wraps every push as {session_id, state}.
+          // Empty session_id means non-standalone (coupled) mode — always apply.
+          const msgSessionId = msg.session_id ?? '';
+          const state = msg.state ?? msg;
+          if (!msgSessionId || msgSessionId === this.activeSession) {
+            this.onStateUpdate(state);
+          }
         } catch {}
       };
-      ws.onclose = () => {
+      es.onerror = () => {
         this.wsStatus = 'reconnecting';
-        setTimeout(() => this.connectWS(), 2500);
-      };
-      ws.onerror = () => {
-        this.wsStatus = 'disconnected';
+        es.close();
+        this._sse = null;
+        setTimeout(() => this.connectSSE(), 2500);
       };
     },
 
@@ -886,6 +925,14 @@ document.addEventListener('alpine:init', () => {
       // Update context lock
       const anyNotPending = Object.values(wus).some(w => w.status !== 'pending');
       this.contextLocked = anyNotPending;
+
+      // Clear executing flag when the loop is done (no more in_progress and at least one terminal)
+      if (this.executing) {
+        const vals = Object.values(wus);
+        const noneInProgress = vals.length > 0 && vals.every(w => w.status !== 'in_progress');
+        const terminal = vals.every(w => ['completed', 'failed', 'blocked'].includes(w.status));
+        if (noneInProgress && terminal) this.executing = false;
+      }
     },
 
     // ---- Session management ----
@@ -896,6 +943,7 @@ document.addEventListener('alpine:init', () => {
 
     async switchSession(sessionId) {
       this.activeSession = sessionId;
+      this.connectSSE();
       if (!this.sessions.find(s => s.id === sessionId)) {
         this.sessions.push({ id: sessionId, label: this._sessionLabel(sessionId) });
       }
@@ -1001,6 +1049,7 @@ document.addEventListener('alpine:init', () => {
         this.chatMessages = [];
         this.contextContent = '';
         this.contextLocked = false;
+        this.connectSSE();
         this.navigate('context');
         await this._startGatherer(sessionId);
       } catch (e) {
@@ -1026,6 +1075,7 @@ document.addEventListener('alpine:init', () => {
         this.activeSession = sid;
         this.sessionRepo = data.repo_path || '';
         this.contextContent = data.context || '';
+        this.connectSSE();
         if (data.has_plan) {
           const sr = await fetch('/api/state?session_id=' + encodeURIComponent(sid));
           this.state = await sr.json();
@@ -1054,29 +1104,87 @@ document.addEventListener('alpine:init', () => {
 
     // ---- Context gathering ----
 
-    async _startGatherer(sessionId) {
-      this.chatMessages = [];
+    _scrollChat() {
+      this.$nextTick(() => {
+        const thread = document.getElementById('chat-thread');
+        if (thread) thread.scrollTop = thread.scrollHeight;
+      });
+    },
+
+    // Consume an SSE stream from a fetch response.
+    // Calls onEvent(parsed) for each JSON data line.
+    // Returns a Promise that resolves when the stream ends.
+    async _consumeSSE(response, onEvent) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop(); // keep incomplete line
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try { onEvent(JSON.parse(line.slice(6))); } catch {}
+          }
+        }
+      }
+    },
+
+    // Start a new in-progress agent bubble and return its index.
+    _pushAgentBubble() {
+      this.chatMessages.push({ role: 'agent', content: '', thinking: '', _open: false, _streaming: true });
+      this._scrollChat();
+      return this.chatMessages.length - 1;
+    },
+
+    // Append an SSE event to the current in-progress bubble.
+    // Returns the (possibly updated) bubble index.
+    _applyGatherEvent(ev, bubbleIdx) {
+      if (ev.t === 'msg_start') {
+        bubbleIdx = this._pushAgentBubble();
+      } else if (ev.t === 'thinking') {
+        if (bubbleIdx < 0) bubbleIdx = this._pushAgentBubble();
+        this.chatMessages[bubbleIdx].thinking += ev.c;
+        this._scrollChat();
+      } else if (ev.t === 'text') {
+        if (bubbleIdx < 0) bubbleIdx = this._pushAgentBubble();
+        this.chatMessages[bubbleIdx].content += ev.c;
+        this._scrollChat();
+      } else if (ev.t === 'done') {
+        if (bubbleIdx >= 0) this.chatMessages[bubbleIdx]._streaming = false;
+        this.gatherReadyToFinish = true;
+        bubbleIdx = -1;
+      } else if (ev.t === 'error') {
+        if (bubbleIdx >= 0) this.chatMessages[bubbleIdx]._streaming = false;
+        this.chatMessages.push({ role: 'system', content: '⚠ ' + ev.c });
+        this._scrollChat();
+        bubbleIdx = -1;
+      }
+      return bubbleIdx;
+    },
+
+    async _startGatherer(sessionId, reopen = false) {
+      if (!reopen) this.chatMessages = [];
+      this.gatherReadyToFinish = false;
       this.gatherLoading = true;
+      let bubbleIdx = -1;
       try {
         const r = await fetch('/api/gather/start', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ session_id: sessionId }),
+          body: JSON.stringify({ session_id: sessionId, reopen }),
         });
-        const data = await r.json();
-        if (data.ok) {
-          this.chatMessages.push({ role: 'agent', content: data.reply });
-        } else {
-          this.chatMessages.push({ role: 'agent', content: '⚠ Could not start gatherer: ' + (data.error || 'unknown error') });
-        }
+        await this._consumeSSE(r, (ev) => {
+          bubbleIdx = this._applyGatherEvent(ev, bubbleIdx);
+        });
       } catch (e) {
-        this.chatMessages.push({ role: 'agent', content: '⚠ Network error starting gatherer: ' + e.message });
+        this.chatMessages.push({ role: 'system', content: '⚠ Network error starting gatherer: ' + e.message });
       } finally {
+        if (bubbleIdx >= 0) this.chatMessages[bubbleIdx]._streaming = false;
         this.gatherLoading = false;
-        this.$nextTick(() => {
-          const thread = document.getElementById('chat-thread');
-          if (thread) thread.scrollTop = thread.scrollHeight;
-        });
+        this._scrollChat();
       }
     },
 
@@ -1086,30 +1194,24 @@ document.addEventListener('alpine:init', () => {
       this.chatMessages.push({ role: 'user', content: msg });
       this.chatInput = '';
       this.gatherLoading = true;
-      this.$nextTick(() => {
-        const thread = document.getElementById('chat-thread');
-        if (thread) thread.scrollTop = thread.scrollHeight;
-      });
+      this.gatherReadyToFinish = false;
+      this._scrollChat();
+      let bubbleIdx = -1;
       try {
         const r = await fetch('/api/gather/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ message: msg, session_id: this.activeSession }),
         });
-        const data = await r.json();
-        if (data.ok) {
-          this.chatMessages.push({ role: 'agent', content: data.reply });
-        } else {
-          this.chatMessages.push({ role: 'agent', content: '⚠ ' + (data.error || 'unknown error') });
-        }
-      } catch (e) {
-        this.chatMessages.push({ role: 'agent', content: '⚠ Network error: ' + e.message });
-      } finally {
-        this.gatherLoading = false;
-        this.$nextTick(() => {
-          const thread = document.getElementById('chat-thread');
-          if (thread) thread.scrollTop = thread.scrollHeight;
+        await this._consumeSSE(r, (ev) => {
+          bubbleIdx = this._applyGatherEvent(ev, bubbleIdx);
         });
+      } catch (e) {
+        this.chatMessages.push({ role: 'system', content: '⚠ Network error: ' + e.message });
+      } finally {
+        if (bubbleIdx >= 0) this.chatMessages[bubbleIdx]._streaming = false;
+        this.gatherLoading = false;
+        this._scrollChat();
       }
     },
 
@@ -1161,33 +1263,69 @@ document.addEventListener('alpine:init', () => {
     },
 
     renderMessage(content) {
-      return (content || '').replace(/`([^`]+)`/g, '<span class="chip">$1</span>');
+      if (!content) return '';
+      let html;
+      try {
+        if (typeof marked !== 'undefined') {
+          html = marked.parse(content, { gfm: true, breaks: true });
+        } else {
+          // marked not yet loaded — plain-text fallback with basic inline code
+          html = content
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/\n/g, '<br>')
+            .replace(/`([^`]+)`/g, '<code>$1</code>');
+        }
+      } catch (_) {
+        // Render error: escape and show as plain text
+        html = content
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+          .replace(/\n/g, '<br>');
+      }
+      // Sanitize: strip script/iframe/style tags that could break rendering
+      html = html
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
+        .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, '');
+      // Highlight @filepath references inserted by the @ file-picker
+      html = html.replace(/@([\w./\-]+)/g, '<span class="file-ref">@$1</span>');
+      return html;
     },
 
     async confirmContext() {
       if (this.contextLocked || this.gatherLoading) return;
       this.gatherLoading = true;
-      this.chatMessages.push({ role: 'agent', content: 'Finalising context…' });
+      this.chatMessages.push({ role: 'system', content: 'Asking the Gatherer to finalise context…' });
+      let bubbleIdx = -1;
+      let finalised = false;
       try {
-        const doneR = await fetch('/api/gather/done', {
+        const r = await fetch('/api/gather/done', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ session_id: this.activeSession }),
         });
-        const doneData = await doneR.json();
-        if (!doneData.ok) {
-          this.chatMessages.push({ role: 'agent', content: '⚠ Could not finalise context: ' + (doneData.error || 'unknown error') });
+        await this._consumeSSE(r, (ev) => {
+          if (ev.t === 'finalised') {
+            finalised = true;
+            const newSlug = ev.slug;
+            if (newSlug && newSlug !== this.activeSession) {
+              const tab = this.sessions.find(s => s.id === this.activeSession);
+              if (tab) { tab.id = newSlug; tab.label = this._sessionLabel(newSlug); }
+              this.activeSession = newSlug;
+            }
+            this.contextContent = ev.context || '';
+            this.chatMessages.push({
+              role: 'system',
+              content: '✓ Context finalised — Gatherer has written context.md to disk. Starting planner…',
+            });
+            this._scrollChat();
+          } else {
+            bubbleIdx = this._applyGatherEvent(ev, bubbleIdx);
+          }
+        });
+        if (!finalised) {
+          this.chatMessages.push({ role: 'system', content: '⚠ Finalisation did not complete — check gatherer output above.' });
           return;
         }
-        const newSlug = doneData.slug;
-        if (newSlug && newSlug !== this.activeSession) {
-          // Update tab label and active session id
-          const tab = this.sessions.find(s => s.id === this.activeSession);
-          if (tab) { tab.id = newSlug; tab.label = this._sessionLabel(newSlug); }
-          this.activeSession = newSlug;
-        }
-        this.contextContent = doneData.context || '';
-        this.chatMessages.push({ role: 'agent', content: 'Context saved. Running planner…' });
         const planR = await fetch('/api/plan', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1195,23 +1333,27 @@ document.addEventListener('alpine:init', () => {
         });
         const planData = await planR.json();
         if (!planData.ok) {
-          this.chatMessages.push({ role: 'agent', content: '⚠ Planner failed: ' + (planData.error || 'unknown error') });
+          this.chatMessages.push({ role: 'system', content: '⚠ Planner failed: ' + (planData.error || 'unknown error') });
           return;
         }
         const wuList = (planData.work_units || []).join(', ');
-        this.chatMessages.push({ role: 'agent', content: `Plan ready: ${wuList}` });
+        this.chatMessages.push({ role: 'system', content: `Plan ready — ${wuList}. Switching to plan view…` });
+        this._scrollChat();
+        const sr = await fetch('/api/state?session_id=' + encodeURIComponent(this.activeSession));
+        this.state = await sr.json();
         this.navigate('plan');
       } catch (e) {
-        this.chatMessages.push({ role: 'agent', content: '⚠ Error: ' + e.message });
+        this.chatMessages.push({ role: 'system', content: '⚠ Error: ' + e.message });
       } finally {
+        if (bubbleIdx >= 0) this.chatMessages[bubbleIdx]._streaming = false;
         this.gatherLoading = false;
       }
     },
 
     async reopenContext() {
       if (this.contextLocked) return;
-      this.chatMessages.push({ role: 'agent', content: 'Reopening context gathering…' });
-      await this._startGatherer(this.activeSession);
+      this.chatMessages.push({ role: 'system', content: '↺ Reopening context gathering…' });
+      await this._startGatherer(this.activeSession, true);
     },
 
     async saveContext() {
@@ -1226,6 +1368,27 @@ document.addEventListener('alpine:init', () => {
     },
 
     // ---- Plan ----
+    async startExecution() {
+      if (this.executing) return;
+      this.executing = true;
+      try {
+        const r = await fetch('/api/execute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: this.activeSession }),
+        });
+        const data = await r.json();
+        if (!data.ok) {
+          alert('Failed to start execution: ' + (data.error || 'unknown'));
+          this.executing = false;
+        }
+        // executing stays true until SSE tells us all WUs are done/failed
+      } catch (e) {
+        alert('Error: ' + e.message);
+        this.executing = false;
+      }
+    },
+
     hasState() {
       return this.state && this.state.work_units && Object.keys(this.state.work_units).length > 0;
     },
@@ -1399,7 +1562,7 @@ document.addEventListener('alpine:init', () => {
       if (wus.every(w => w.status === 'completed')) return 'Done';
       if (wus.some(w => w.status === 'in_progress')) return 'Executing';
       if (wus.some(w => w.status === 'failed' || w.status === 'blocked')) return 'Needs Pivot';
-      return 'Executing';
+      return this.executing ? 'Executing' : 'Ready';
     },
 
     phaseClass() {

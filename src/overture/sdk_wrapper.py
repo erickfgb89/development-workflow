@@ -14,8 +14,9 @@ validation even runs.
 import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -23,8 +24,10 @@ from claude_agent_sdk import (
     ClaudeSDKClient,
     ResultMessage,
     TextBlock,
+    ThinkingBlock,
     query,
 )
+from claude_agent_sdk.types import McpSdkServerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -236,22 +239,37 @@ class GathererSession:
             reply2 = await session.send("Any more context?")
     """
 
+    # Tools the Gatherer must never use — it can read freely but not write files.
+    _DISALLOWED_TOOLS = ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"]
+
     def __init__(
         self,
         system_prompt: str,
         cwd: Path,
         model: str | None = None,
+        mcp_server: Any | None = None,
     ) -> None:
         self._system_prompt = system_prompt
         self._cwd = cwd
         self._model = model
         self._client: ClaudeSDKClient | None = None
+
+        mcp_servers: dict[str, McpSdkServerConfig] = {}
+        if mcp_server is not None:
+            mcp_servers["overture-gatherer"] = McpSdkServerConfig(
+                type="sdk",
+                name="overture-gatherer",
+                instance=mcp_server._mcp_server,
+            )
+
         self._options = ClaudeAgentOptions(
-            permission_mode="acceptEdits",
+            permission_mode="bypassPermissions",
             system_prompt=system_prompt,
             cwd=cwd,
             model=model or DEFAULT_MODEL,
             max_turns=200,
+            disallowed_tools=self._DISALLOWED_TOOLS,
+            mcp_servers=mcp_servers,
         )
 
     async def __aenter__(self) -> "GathererSession":
@@ -264,16 +282,78 @@ class GathererSession:
             await self._client.disconnect()
             self._client = None
 
-    async def send(self, user_text: str) -> str:
-        """Send a user message and collect the full assistant reply."""
+    GatherEvent = tuple[Literal["msg_start", "thinking", "text", "done"], str]
+
+    async def stream(self, user_text: str) -> "AsyncIterator[GathererSession.GatherEvent]":
+        """Send *user_text* and yield ``(kind, text)`` tuples as they arrive.
+
+        Kinds:
+          - ``"msg_start"`` — a new AssistantMessage is beginning (text="")
+          - ``"thinking"``  — a ThinkingBlock chunk
+          - ``"text"``      — a TextBlock chunk
+          - ``"done"``      — emitted once when all messages are complete (text="")
+
+        ``"msg_start"`` lets the UI create a new bubble for each distinct
+        AssistantMessage (e.g. when the agent sends text, calls a tool, then
+        sends a follow-up message).
+        """
         if self._client is None:
             raise RuntimeError("Not connected. Use as async context manager.")
 
         await self._client.query(user_text)
-        text_parts: list[str] = []
+        emitted_message_ids: set[str] = set()
+        msg_count = 0
+        emitted_count = 0
         async for message in self._client.receive_response():
             if isinstance(message, AssistantMessage):
+                msg_id = message.message_id or ""
+                block_types = [type(b).__name__ for b in message.content]
+                has_text = any(isinstance(b, TextBlock) and b.text for b in message.content)
+                has_thinking = any(isinstance(b, ThinkingBlock) and b.thinking for b in message.content)
+                msg_count += 1
+                logger.debug(
+                    "gatherer stream msg=%d id=%s blocks=%s has_text=%s has_thinking=%s",
+                    msg_count, msg_id or "none", block_types, has_text, has_thinking,
+                )
+                # The CLI streams the same AssistantMessage multiple times as
+                # blocks arrive.  The first delivery may have only a
+                # ThinkingBlock; the final delivery adds the TextBlock.
+                # Skip deliveries that have no text yet (partial thinking-only)
+                # to avoid emitting empty bubbles in the UI.
+                # Also skip if we already emitted this message_id (duplicate final).
+                if msg_id and msg_id in emitted_message_ids:
+                    logger.debug("gatherer stream msg=%d skipped duplicate id=%s", msg_count, msg_id)
+                    continue
+                if not has_text and not has_thinking:
+                    logger.debug("gatherer stream msg=%d skipped empty", msg_count)
+                    continue
+                if not has_text:
+                    # Thinking arrived but text hasn't yet — skip this partial.
+                    logger.debug("gatherer stream msg=%d skipped thinking-only partial", msg_count)
+                    continue
+                if msg_id:
+                    emitted_message_ids.add(msg_id)
+                emitted_count += 1
+                logger.debug("gatherer stream msg=%d emitting bubble #%d", msg_count, emitted_count)
+                yield ("msg_start", "")
                 for block in message.content:
-                    if isinstance(block, TextBlock):
-                        text_parts.append(block.text)
-        return "".join(text_parts)
+                    if isinstance(block, ThinkingBlock) and block.thinking:
+                        yield ("thinking", block.thinking)
+                    elif isinstance(block, TextBlock) and block.text:
+                        yield ("text", block.text)
+        logger.info(
+            "gatherer stream done: saw %d AssistantMessages, emitted %d bubbles",
+            msg_count, emitted_count,
+        )
+        yield ("done", "")
+
+    async def send(self, user_text: str) -> tuple[str, str]:
+        """Send a user message and return ``(text_reply, thinking_text)``."""
+        text_parts: list[str] = []
+        thinking_parts: list[str] = []
+        async for kind, chunk in self.stream(user_text):
+            if kind == "text":
+                text_parts.append(chunk)
+            elif kind == "thinking":
+                thinking_parts.append(chunk)
+        return "".join(text_parts), "".join(thinking_parts)
